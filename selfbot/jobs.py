@@ -1,7 +1,9 @@
-"""Repeat jobs — DB-backed, per-user, unlimited duration supported.
+"""Repeat jobs — DB-backed, per-user, self-bot sender.
 
-Robust entity resolution: resolves the target chat once at the start,
-populates the dialogs cache so `send_message` works with numeric chat_ids.
+IMPORTANT: In a self-bot setup we send messages using the USER client
+(the owner's own Telegram account), not the bot client. This allows
+sending to ANY chat the user is a member of, without needing the bot
+to be added there.
 """
 import asyncio
 import random
@@ -155,23 +157,27 @@ def stop_all(owner_id: Optional[int] = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Entity resolution helpers
+# Entity resolution (self-bot friendly)
 # ---------------------------------------------------------------------------
-async def _resolve_target(bot_client, target_id: int):
-    """Try hard to resolve a numeric chat_id to a Telethon entity.
+async def _resolve_target(user_client, target_id: int):
+    """Resolve a numeric chat_id to a Telethon entity using the USER client.
 
-    Order of attempts:
+    Because this is a self-bot (running on the owner's own account), the
+    user client already "sees" every chat the owner is a member of. We
+    only need to make sure the entity cache is warm.
+
+    Order:
       1. get_entity(int)
       2. get_input_entity(int)
-      3. iter_dialogs() to populate cache, then retry
-      4. fall back to the raw int
-    Returns entity or the raw int.
+      3. iter_dialogs() to warm cache, then retry get_entity
+      4. try -abs(id) (some IDs need positive/negative flip)
+      5. fall back to raw int
     """
     tid = int(target_id)
 
     # 1) direct
     try:
-        entity = await bot_client.get_entity(tid)
+        entity = await user_client.get_entity(tid)
         log_jobs.info(f"resolve: get_entity({tid}) OK -> {entity}")
         return entity
     except Exception as e:
@@ -179,33 +185,43 @@ async def _resolve_target(bot_client, target_id: int):
 
     # 2) input entity
     try:
-        entity = await bot_client.get_input_entity(tid)
+        entity = await user_client.get_input_entity(tid)
         log_jobs.info(f"resolve: get_input_entity({tid}) OK -> {entity}")
         return entity
     except Exception as e:
         log_jobs.warning(f"resolve: get_input_entity({tid}) failed: {type(e).__name__}: {e}")
 
-    # 3) populate dialogs cache
+    # 3) warm dialogs cache
     try:
         count = 0
-        async for _d in bot_client.iter_dialogs():
+        async for _d in user_client.iter_dialogs():
             count += 1
-        log_jobs.info(f"resolve: iter_dialogs populated {count} chats")
+        log_jobs.info(f"resolve: iter_dialogs warmed {count} chats")
     except Exception as e:
         log_jobs.warning(f"resolve: iter_dialogs failed: {type(e).__name__}: {e}")
 
-    # retry direct after cache
+    # retry get_entity after cache
     try:
-        entity = await bot_client.get_entity(tid)
-        log_jobs.info(f"resolve: after dialogs cache, get_entity({tid}) OK -> {entity}")
+        entity = await user_client.get_entity(tid)
+        log_jobs.info(f"resolve: after cache, get_entity({tid}) OK -> {entity}")
         return entity
     except Exception as e:
         log_jobs.warning(f"resolve: still failed after cache: {type(e).__name__}: {e}")
 
-    # 4) fallback to raw int
+    # 4) try flipped sign (some Telegram IDs are stored negative in DBs, positive in Telethon)
+    alt = -tid if tid > 0 else abs(tid)
+    if alt != tid:
+        try:
+            entity = await user_client.get_entity(alt)
+            log_jobs.info(f"resolve: flipped sign OK: {tid} -> {alt}")
+            return entity
+        except Exception as e:
+            log_jobs.warning(f"resolve: flipped sign ({alt}) failed: {type(e).__name__}: {e}")
+
+    # 5) fallback
     log_jobs.warning(
         f"resolve: falling back to raw int {tid}. "
-        f"Add the bot to this chat first, or check that the ID is correct."
+        f"Check that your user account is a member of this chat."
     )
     return tid
 
@@ -213,7 +229,8 @@ async def _resolve_target(bot_client, target_id: int):
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-async def run_job(bot_client, job: dict) -> None:
+async def run_job(sender_client, job: dict) -> None:
+    """sender_client MUST be the user_client in a self-bot setup."""
     job_id = job.get("id", "?")
     owner_id = job.get("owner_id")
     target_id = job.get("chat_id")
@@ -222,11 +239,11 @@ async def run_job(bot_client, job: dict) -> None:
 
     log_jobs.info(
         f"run_job START id={job_id} owner={owner_id} target={target_id} "
-        f"interval={interval}s duration={duration}m"
+        f"interval={interval}s duration={duration}m sender={type(sender_client).__name__}"
     )
 
     # --- Resolve target ONCE ---
-    resolved_target = await _resolve_target(bot_client, target_id)
+    resolved_target = await _resolve_target(sender_client, target_id)
 
     deadline = None
     if duration > 0:
@@ -248,7 +265,7 @@ async def run_job(bot_client, job: dict) -> None:
 
             for attempt in range(3):
                 try:
-                    await bot_client.send_message(resolved_target, rendered)
+                    await sender_client.send_message(resolved_target, rendered)
                     sent_ok = True
                     break
                 except ValueError as e:
@@ -256,10 +273,9 @@ async def run_job(bot_client, job: dict) -> None:
                     log_jobs.warning(
                         f"job {job_id}: attempt {attempt+1} ValueError: {e}"
                     )
-                    # Try re-resolve once
                     try:
-                        resolved_target = await _resolve_target(bot_client, target_id)
-                        await bot_client.send_message(resolved_target, rendered)
+                        resolved_target = await _resolve_target(sender_client, target_id)
+                        await sender_client.send_message(resolved_target, rendered)
                         sent_ok = True
                         log_jobs.info(f"job {job_id}: re-resolve + send OK")
                         break

@@ -1,5 +1,10 @@
 """Telegram bot runtime — login-first with QR, per-user, group-first jobs.
 
+SELF-BOT architecture:
+- Messages to chats are sent using the USER client (owner's own account),
+  not the bot client. This lets the account post to any chat it's a member of.
+- The bot client only handles commands and UI (buttons/panels).
+
 - Peer group selection via Telegram native UI (KeyboardButtonRequestPeer)
 - Fallback to manual chat_id entry when peer picker unavailable
 - Per-user state, per-user sessions
@@ -233,6 +238,14 @@ class BotRuntime:
 
     def is_logged_in(self, user_id: int) -> bool:
         return self.user_clients.get(int(user_id)) is not None
+
+    def sender_for(self, user_id: int):
+        """Return the client used to send messages for this user.
+
+        SELF-BOT: prefer the user client (owner's own account).
+        Fall back to bot client only if no user session exists.
+        """
+        return self.user_clients.get(int(user_id)) or self.bot_client
 
     def recent_group(self, user_id: int) -> Optional[int]:
         return self._recent_groups.get(int(user_id))
@@ -1087,7 +1100,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[P._back_btn(b"job:setup:back")]])
         return
 
-    # ---- Confirm ----
+    # ---- Confirm & start ----
     if data == "job:confirm:start":
         draft = st.get("job_draft", {})
         interval = draft.get("interval", 0)
@@ -1125,10 +1138,15 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         job = res
         job_id = job["id"]
 
+        # ---- SELF-BOT: send with USER client (owner's own account) ----
+        sender = rt.sender_for(uid)
         try:
-            task = asyncio.create_task(J.run_job(rt.bot_client, job))
+            task = asyncio.create_task(J.run_job(sender, job))
             J.register_task(job_id, task)
-            log_bot.info(f"job task created + registered: id={job_id}")
+            log_bot.info(
+                f"job task created + registered: id={job_id} "
+                f"sender={type(sender).__name__}"
+            )
         except Exception as e:
             log_bot.error(f"failed to create job task: {type(e).__name__}: {e}")
             await edit(f"❌ Failed to start job: {e}",
