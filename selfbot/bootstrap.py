@@ -3,6 +3,9 @@
 Xray runs as a separate process (started by Dockerfile CMD) and exposes a
 local SOCKS5 proxy on 127.0.0.1:1080 which tunnels through the VLESS config
 to Cloudflare Workers. Telethon connects through that SOCKS5 proxy directly.
+
+Multiple per-user sessions are loaded on boot so each user has their own
+Telegram client (their own profile clock).
 """
 import asyncio
 import threading
@@ -13,7 +16,6 @@ from .config import CONFIG, DB_PATH, android_fallback, get_api_credentials, save
 from .logging_setup import log, log_bot, log_clock
 from .store import users_store
 from .users import ensure_user
-from .economy import grant
 from .subscriptions import set_sub
 
 try:
@@ -67,24 +69,48 @@ def _seed_owner() -> None:
     if int(u.get("diamonds", 0)) < 999999:
         from .economy import set_balance
         set_balance(owner, 999999)
-    set_sub(owner, "vip", days=36500, auto_renew=True)
 
 
 # ---------------------------------------------------------------------------
-# Force-register bot commands
+# Force-register bot commands (robust imports for Telethon 1.45+)
 # ---------------------------------------------------------------------------
 async def _set_bot_commands(bot) -> None:
     """Register ONLY the four basic commands in the Telegram menu."""
     try:
         from telethon.tl.functions.bots import SetBotCommandsRequest
-        from telethon.tl.types import (
-            BotCommand,
-            BotCommandScopeDefault,
-            BotCommandScopeAllPrivateChats,
-        )
     except ImportError as e:
-        log_bot.warning(f"SetBotCommands types not available: {e}")
+        log_bot.warning(f"SetBotCommandsRequest not available: {e}")
         return
+
+    # --- BotCommand ---
+    try:
+        from telethon.tl.types import BotCommand  # type: ignore
+    except ImportError:
+        try:
+            from telethon.tl.types.bots import BotCommand  # type: ignore
+        except ImportError as e:
+            log_bot.warning(f"BotCommand not available: {e}")
+            return
+
+    # --- BotCommandScopeDefault ---
+    BotCommandScopeDefault = None
+    try:
+        from telethon.tl.types import BotCommandScopeDefault  # type: ignore
+    except ImportError:
+        try:
+            from telethon.tl.types.bots import BotCommandScopeDefault  # type: ignore
+        except ImportError:
+            pass
+
+    # --- BotCommandScopeAllPrivateChats ---
+    BotCommandScopeAllPrivateChats = None
+    try:
+        from telethon.tl.types import BotCommandScopeAllPrivateChats  # type: ignore
+    except ImportError:
+        try:
+            from telethon.tl.types.bots import BotCommandScopeAllPrivateChats  # type: ignore
+        except ImportError:
+            pass
 
     commands = [
         BotCommand(command="start",  description="Open the panel"),
@@ -93,10 +119,21 @@ async def _set_bot_commands(bot) -> None:
         BotCommand(command="logout", description="Delete session"),
     ]
 
-    scopes = [
-        BotCommandScopeDefault(),
-        BotCommandScopeAllPrivateChats(),
-    ]
+    scopes = []
+    if BotCommandScopeDefault:
+        try:
+            scopes.append(BotCommandScopeDefault())
+        except Exception:
+            pass
+    if BotCommandScopeAllPrivateChats:
+        try:
+            scopes.append(BotCommandScopeAllPrivateChats())
+        except Exception:
+            pass
+
+    if not scopes:
+        log_bot.warning("no valid BotCommandScope found — skipping command registration")
+        return
 
     for scope in scopes:
         try:
@@ -137,36 +174,19 @@ async def _make_bot_client(runtime):
         return client
 
 
-async def _make_user_client(runtime):
-    api_id, api_hash = get_api_credentials()
-    session_path = str(DB_PATH / "user.session")
-    if not Path(session_path).exists():
-        return None
-
-    proxy_tuple = _build_telethon_proxy()
-
-    try:
-        client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_tuple)
-        await client.connect()
-        if not await client.is_user_authorized():
-            return None
-        return client
-    except Exception as e:
-        log_bot.warning(f"user client init failed: {e}")
-        return None
-
-
-async def make_user_client_for_login():
+async def make_user_client_for_login(user_id: int = None):
     """Build a proxy-aware user client for login / QR login.
 
-    Uses an explicit mobile device profile (Pixel 5 / Android 11) because
-    Telegram treats requests from 'mobile devices' more favorably when
-    delivering login codes.
+    If user_id is given, uses a per-user session file: data/user_<id>.session
+    Otherwise falls back to data/user.session (legacy).
     """
     api_id, api_hash = get_api_credentials()
-    session_path = str(DB_PATH / "user.session")
+    if user_id is not None:
+        session_path = str(DB_PATH / f"user_{int(user_id)}.session")
+    else:
+        session_path = str(DB_PATH / "user.session")
     proxy_tuple = _build_telethon_proxy()
-    log_bot.info(f"make_user_client_for_login: proxy={proxy_tuple}")
+    log_bot.info(f"make_user_client_for_login: user={user_id} proxy={proxy_tuple}")
 
     client = TelegramClient(
         session_path,
@@ -182,6 +202,36 @@ async def make_user_client_for_login():
     await client.connect()
     log_bot.info("make_user_client_for_login: connected (mobile device profile)")
     return client
+
+
+async def _load_user_sessions(runtime) -> None:
+    """Load all existing per-user sessions on boot."""
+    for uid_str in list((users_store.all() or {}).keys()):
+        if not str(uid_str).isdigit():
+            continue
+        uid = int(uid_str)
+        session_file = DB_PATH / f"user_{uid}.session"
+        if not session_file.exists():
+            continue
+        try:
+            client = await make_user_client_for_login(uid)
+            if await client.is_user_authorized():
+                runtime.user_clients[uid] = client
+                log_bot.info(f"loaded user session uid={uid}")
+                u = users_store.get(str(uid)) or {}
+                if u.get("clock_on"):
+                    try:
+                        from .clock import start_clock
+                        start_clock(client, uid)
+                    except Exception as e:
+                        log_clock.warning(f"clock autostart failed for uid={uid}: {e}")
+            else:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+        except Exception as e:
+            log_bot.warning(f"session load failed for uid={uid}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -255,18 +305,9 @@ async def _boot_async(runtime) -> None:
     log.info("║  Send this to your bot to become owner.    ║")
     log.info("╚════════════════════════════════════════════╝")
 
-    # 4) User client (if session exists)
-    runtime.user_client = await _make_user_client(runtime)
-    if runtime.user_client:
-        log_bot.info("user client connected")
-        try:
-            from .clock import strip_time_now
-            await strip_time_now(runtime.user_client)
-        except Exception as e:
-            log_clock.warning(f"startup strip failed: {e}")
-        if CONFIG.get("clock_on"):
-            from .clock import start_clock
-            start_clock(runtime.user_client)
+    # 4) Load existing per-user sessions
+    log.info("loading user sessions…")
+    await _load_user_sessions(runtime)
 
     # 5) Register handlers
     log.info("registering bot handlers…")
@@ -296,18 +337,10 @@ def _start_scheduler(runtime) -> None:
         except Exception as e:
             log.exception(f"daily backup failed: {e}")
 
-    def _daily_sub_check():
-        try:
-            from .subscriptions import process_auto_renew_and_expiry
-            process_auto_renew_and_expiry()
-        except Exception as e:
-            log.exception(f"sub check failed: {e}")
-
     sched.add_job(_daily_backup, "cron", hour=3, minute=0)
-    sched.add_job(_daily_sub_check, "cron", hour=4, minute=0)
     sched.start()
     runtime._scheduler = sched
-    log.info("scheduler started (backup @ 3AM, sub check @ 4AM)")
+    log.info("scheduler started (backup @ 3AM)")
 
 
 # ---------------------------------------------------------------------------
@@ -336,20 +369,20 @@ async def _shutdown_async(runtime) -> None:
         await stop_watchdog(runtime)
     except Exception:
         pass
-    try:
-        if runtime.user_client:
+    # Strip time from every user's name
+    for uid, client in list(getattr(runtime, "user_clients", {}).items()):
+        try:
             from .clock import shutdown_clock
-            await shutdown_clock(runtime.user_client)
-    except Exception as e:
-        log_clock.warning(f"shutdown strip failed: {e}")
+            await shutdown_clock(client, uid)
+        except Exception as e:
+            log_clock.warning(f"shutdown strip failed for uid={uid}: {e}")
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
     try:
         if getattr(runtime, "_scheduler", None):
             runtime._scheduler.shutdown(wait=False)
-    except Exception:
-        pass
-    try:
-        if runtime.user_client:
-            await runtime.user_client.disconnect()
     except Exception:
         pass
     try:
