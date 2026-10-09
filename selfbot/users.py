@@ -1,4 +1,5 @@
 """User records — DB-backed."""
+import json
 import random
 import string
 from datetime import datetime, timezone as dt_timezone
@@ -27,14 +28,11 @@ def get_user(user_id: int) -> Optional[dict]:
     u = db.get_user(user_id)
     if not u:
         return None
-    # enrich parsed fields
     try:
-        import json
         u["referrals"] = json.loads(u.get("referrals") or "[]")
     except Exception:
         u["referrals"] = []
     try:
-        import json
         u["notify"] = json.loads(u.get("notify") or "{}")
     except Exception:
         u["notify"] = {}
@@ -45,13 +43,14 @@ def ensure_user(user_id: int, username: str = "", first_name: str = "",
                 referred_by: Optional[int] = None) -> dict:
     existing = get_user(user_id)
     if existing:
-        db.upsert_user(user_id,
-                       username=username or existing.get("username", ""),
-                       first_name=first_name or existing.get("first_name", ""),
-                       last_seen=_now_iso())
+        db.upsert_user(
+            user_id,
+            username=username or existing.get("username", ""),
+            first_name=first_name or existing.get("first_name", ""),
+            last_seen=_now_iso(),
+        )
         return get_user(user_id)
 
-    import json
     db.upsert_user(
         user_id,
         username=username or "",
@@ -95,8 +94,7 @@ def unban(user_id: int) -> None:
 
 
 def delete_user(user_id: int) -> None:
-    conn = db.get_conn()
-    conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
+    db.delete_user(user_id)
 
 
 def all_users() -> dict:
@@ -134,7 +132,6 @@ def new_last_7d() -> int:
 
 
 def set_notify(user_id: int, key: str, value: bool) -> None:
-    import json
     u = get_user(user_id) or {}
     notify = u.get("notify") or dict(DEFAULT_NOTIFY)
     if key in notify:
@@ -156,7 +153,6 @@ def find_by_referral_code(code: str) -> Optional[int]:
 
 
 def add_referral(referrer_id: int, referee_id: int) -> None:
-    import json
     u = get_user(referrer_id) or {}
     refs = u.get("referrals") or []
     if int(referee_id) not in [int(x) for x in refs]:

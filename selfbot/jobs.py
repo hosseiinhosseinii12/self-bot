@@ -1,7 +1,4 @@
-"""Repeat jobs — DB-backed, per-user, infinite duration supported.
-
-duration = 0 means "run forever until /stop".
-"""
+"""Repeat jobs — DB-backed, per-user, unlimited duration supported."""
 import asyncio
 import random
 import string
@@ -15,12 +12,10 @@ from .logging_setup import log_jobs
 from . import db
 
 MIN_REPEAT_SEC = 60
-MAX_DURATION_MIN = 0  # 0 = unlimited
-MAX_MESSAGES = 0      # 0 = unlimited
+MAX_MESSAGES = 0  # 0 = unlimited
 MAX_HISTORY = 30
 MAX_TEMPLATES = 20
 
-# job_id -> asyncio.Task
 _active_tasks: Dict[str, asyncio.Task] = {}
 
 
@@ -88,17 +83,16 @@ def create_job(owner_id: int, chat_id: int, interval_seconds: int,
         if duration_minutes < 0:
             duration_minutes = 0
     except Exception as e:
-        log_jobs.error(f"create_job: invalid input types: {e}")
+        log_jobs.error(f"create_job: invalid input: {e}")
         return False, f"Invalid input: {e}"
 
     log_jobs.info(
         f"create_job called owner={owner_id} target={chat_id} "
-        f"interval={interval_seconds}s duration={duration_minutes}m "
-        f"(0=unlimited)"
+        f"interval={interval_seconds}s duration={duration_minutes}m"
     )
 
     if not spend(owner_id, cost_job(), "job_create"):
-        log_jobs.warning(f"create_job: insufficient diamonds for owner={owner_id}")
+        log_jobs.warning(f"create_job: insufficient diamonds for {owner_id}")
         return False, "insufficient"
 
     job_id = _rand_id()
@@ -132,18 +126,18 @@ def active_count(owner_id: Optional[int] = None) -> int:
 
 
 def stop_job(job_id: str) -> bool:
-    """Stop a single job by ID."""
     job = db.get_job(job_id)
-    if not job:
-        return False
-    if job.get("status") != "running":
+    if not job or job.get("status") != "running":
         return False
     task = _active_tasks.pop(job_id, None)
     if task and not task.done():
         task.cancel()
     db.update_job(job_id, status="stopped", finished_at=_now_iso())
-    db.add_history(job_id, job["owner_id"], job["chat_id"],
-                   job.get("text", ""), job.get("sent", 0))
+    try:
+        db.add_history(job_id, job["owner_id"], job["chat_id"],
+                       job.get("text", ""), job.get("sent", 0))
+    except Exception:
+        pass
     log_jobs.info(f"job stopped id={job_id}")
     return True
 
@@ -160,7 +154,6 @@ def stop_all(owner_id: Optional[int] = None) -> int:
 # Run
 # ---------------------------------------------------------------------------
 async def run_job(bot_client, job: dict) -> None:
-    """Sender loop. duration==0 → unlimited. Stops only on /stop or error."""
     job_id = job.get("id", "?")
     owner_id = job.get("owner_id")
     target_id = job.get("chat_id")
@@ -168,9 +161,8 @@ async def run_job(bot_client, job: dict) -> None:
     duration = int(job.get("duration", 0))
 
     log_jobs.info(
-        f"run_job START id={job_id} owner={owner_id} "
-        f"target={target_id} interval={interval}s "
-        f"duration={duration}m {'(unlimited)' if duration == 0 else ''}"
+        f"run_job START id={job_id} owner={owner_id} target={target_id} "
+        f"interval={interval}s duration={duration}m"
     )
 
     deadline = None
@@ -198,24 +190,23 @@ async def run_job(bot_client, job: dict) -> None:
                 except Exception as e:
                     last_err = e
                     log_jobs.warning(
-                        f"job {job_id}: send attempt {attempt+1} failed: "
+                        f"job {job_id}: attempt {attempt+1} failed: "
                         f"{type(e).__name__}: {e}"
                     )
                     await asyncio.sleep(2)
 
             if not sent_ok:
-                log_jobs.error(f"job {job_id}: giving up after 3 attempts: {last_err}")
+                log_jobs.error(f"job {job_id}: giving up: {last_err}")
                 db.update_job(job_id, status="send_failed",
                               error=str(last_err), finished_at=_now_iso())
                 return
 
             sent += 1
             db.update_job(job_id, sent=sent)
-            log_jobs.info(f"job {job_id}: sent {sent} messages so far")
+            log_jobs.info(f"job {job_id}: sent {sent} messages")
 
-            # Per-message diamond cost
             if not spend(owner_id, cost_job_message(), "job_message"):
-                log_jobs.warning(f"job {job_id}: insufficient diamonds for owner {owner_id}")
+                log_jobs.warning(f"job {job_id}: insufficient diamonds")
                 db.update_job(job_id, status="insufficient",
                               finished_at=_now_iso())
                 return
@@ -230,11 +221,15 @@ async def run_job(bot_client, job: dict) -> None:
         raise
     except Exception as e:
         log_jobs.error(
-            f"job {job_id}: crashed: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+            f"job {job_id}: crashed: {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}"
         )
         db.update_job(job_id, status="error", error=str(e),
                       finished_at=_now_iso())
     finally:
         _active_tasks.pop(job_id, None)
-        db.add_history(job_id, owner_id, target_id, job.get("text", ""), sent)
+        try:
+            db.add_history(job_id, owner_id, target_id, job.get("text", ""), sent)
+        except Exception:
+            pass
         log_jobs.info(f"run_job END id={job_id} sent={sent}")

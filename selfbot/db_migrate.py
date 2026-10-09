@@ -61,10 +61,10 @@ def migrate_if_needed() -> None:
 
     txs = _load_json("transactions.json", [])
     if isinstance(txs, list):
-        for tx in txs[-50000:]:
-            if isinstance(tx, dict):
+        for t in txs[-50000:]:
+            if isinstance(t, dict):
                 try:
-                    db.add_tx(tx)
+                    db.add_tx(t)
                 except Exception:
                     pass
 

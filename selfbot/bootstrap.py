@@ -1,13 +1,10 @@
-"""Boot and shutdown orchestration for the whole app."""
+"""Boot and shutdown orchestration."""
 import asyncio
-import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .config import CONFIG, DB_PATH, android_fallback, get_api_credentials, save_config
+from .config import CONFIG, DB_PATH, android_fallback, get_api_credentials
 from .logging_setup import log, log_bot, log_clock
-from .store import users_store
-from .users import ensure_user
 
 try:
     from telethon import TelegramClient
@@ -23,31 +20,29 @@ def _build_telethon_proxy():
     if not proxy_url:
         return None
     try:
-        import socks  # PySocks
+        import socks
     except ImportError:
-        log_bot.warning("PySocks not installed — proceeding without proxy")
+        log_bot.warning("PySocks not installed")
         return None
-
     try:
         u = urlparse(proxy_url)
         scheme = (u.scheme or "socks5").lower()
         host = u.hostname or "127.0.0.1"
         port = int(u.port or 1080)
     except Exception as e:
-        log_bot.warning(f"could not parse proxy URL {proxy_url!r}: {e}")
+        log_bot.warning(f"proxy parse failed: {e}")
         return None
-
     if scheme == "socks5":
         return (socks.SOCKS5, host, port)
     if scheme == "socks4":
         return (socks.SOCKS4, host, port)
     if scheme in ("http", "https"):
         return (socks.HTTP, host, port)
-    log_bot.warning(f"unknown proxy scheme {scheme!r}")
     return None
 
 
 def _seed_owner() -> None:
+    from .users import ensure_user
     owner = int(CONFIG.get("owner_id", 338266658))
     u = ensure_user(owner, first_name="Owner")
     if int(u.get("diamonds", 0)) < 999999:
@@ -60,16 +55,14 @@ async def _set_bot_commands(bot) -> None:
         from telethon.tl.functions.bots import SetBotCommandsRequest
         from telethon.tl.types import BotCommand, BotCommandScopeDefault
     except ImportError as e:
-        log_bot.warning(f"SetBotCommands types not available: {e}")
+        log_bot.warning(f"commands types unavailable: {e}")
         return
-
     commands = [
-        BotCommand(command="start",  description="Open the panel"),
-        BotCommand(command="help",   description="Show help"),
-        BotCommand(command="login",  description="Log in with phone → code"),
-        BotCommand(command="logout", description="Delete session"),
+        BotCommand(command="start", description="Open panel"),
+        BotCommand(command="help", description="Help"),
+        BotCommand(command="login", description="Login"),
+        BotCommand(command="logout", description="Logout"),
     ]
-
     try:
         await bot(SetBotCommandsRequest(
             scope=BotCommandScopeDefault(),
@@ -78,7 +71,7 @@ async def _set_bot_commands(bot) -> None:
         ))
         log_bot.info(f"registered {len(commands)} commands")
     except Exception as e:
-        log_bot.warning(f"could not set commands: {e}")
+        log_bot.warning(f"set commands failed: {e}")
 
 
 async def _make_bot_client(runtime):
@@ -86,10 +79,8 @@ async def _make_bot_client(runtime):
     bot_token = CONFIG.get("bot_token") or ""
     if not bot_token:
         raise RuntimeError("BOT_TOKEN not set.")
-
     session_path = str(DB_PATH / "bot.session")
     proxy_tuple = _build_telethon_proxy()
-
     try:
         client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_tuple)
         await client.start(bot_token=bot_token)
@@ -109,15 +100,11 @@ async def make_user_client_for_login(user_id: int = None):
     else:
         session_path = str(DB_PATH / "user.session")
     proxy_tuple = _build_telethon_proxy()
-    log_bot.info(f"make_user_client_for_login: user={user_id} proxy={proxy_tuple}")
-
+    log_bot.info(f"make_user_client_for_login: user={user_id}")
     client = TelegramClient(
         session_path, api_id, api_hash, proxy=proxy_tuple,
-        device_model="Pixel 5",
-        system_version="11",
-        app_version="8.4.1",
-        lang_code="en",
-        system_lang_code="en-US",
+        device_model="Pixel 5", system_version="11", app_version="8.4.1",
+        lang_code="en", system_lang_code="en-US",
     )
     await client.connect()
     log_bot.info("make_user_client_for_login: connected")
@@ -129,9 +116,8 @@ async def _load_user_sessions(runtime) -> None:
         from . import db
         rows = db.all_users()
     except Exception as e:
-        log_bot.warning(f"could not list users: {e}")
+        log_bot.warning(f"list users failed: {e}")
         return
-
     for uid_str in list(rows.keys()):
         if not str(uid_str).isdigit():
             continue
@@ -143,19 +129,14 @@ async def _load_user_sessions(runtime) -> None:
             client = await make_user_client_for_login(uid)
             if await client.is_user_authorized():
                 runtime.user_clients[uid] = client
-                log_bot.info(f"loaded user session uid={uid}")
+                log_bot.info(f"loaded session uid={uid}")
                 u = db.get_user(uid) or {}
                 if u.get("clock_on"):
                     try:
                         from .clock import start_clock
                         start_clock(client, uid)
                     except Exception as e:
-                        log_clock.warning(f"clock autostart failed uid={uid}: {e}")
-            else:
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
+                        log_clock.warning(f"clock autostart failed: {e}")
         except Exception as e:
             log_bot.warning(f"session load failed uid={uid}: {e}")
 
@@ -178,7 +159,7 @@ def boot_all(runtime) -> None:
 async def _boot_async(runtime) -> None:
     log.info("=== SELF BOT booting ===")
 
-    # ---- 1. Init DB BEFORE anything else ----
+    # ---- 1. DB INIT FIRST ----
     try:
         from . import db
         db.init_db()
@@ -187,14 +168,13 @@ async def _boot_async(runtime) -> None:
         log.error(f"DB init failed: {e}")
         raise
 
-    # ---- 2. Migrate legacy JSON stores (once) ----
     try:
         from . import db_migrate
         db_migrate.migrate_if_needed()
     except Exception as e:
         log.warning(f"migration skipped: {e}")
 
-    # ---- 3. Verify Xray proxy ----
+    # ---- 2. proxy check ----
     try:
         proxy_tuple = _build_telethon_proxy()
         if proxy_tuple:
@@ -209,13 +189,13 @@ async def _boot_async(runtime) -> None:
                     pass
                 log.info(f"Xray SOCKS5 proxy reachable at {host}:{port}")
             except Exception as e:
-                log.warning(f"Xray SOCKS5 proxy NOT reachable: {e}")
+                log.warning(f"Xray NOT reachable: {e}")
         else:
-            log.info("proxy disabled — connecting directly")
+            log.info("proxy disabled")
     except Exception as e:
         log.warning(f"proxy check failed: {e}")
 
-    # ---- 4. Seed owner ----
+    # ---- 3. seed owner ----
     log.info("seeding owner…")
     try:
         _seed_owner()
@@ -223,7 +203,7 @@ async def _boot_async(runtime) -> None:
     except Exception as e:
         log.error(f"seed owner failed: {e}")
 
-    # ---- 5. Bot client ----
+    # ---- 4. bot client ----
     log.info("connecting bot client…")
     try:
         runtime.bot_client = await _make_bot_client(runtime)
@@ -234,22 +214,20 @@ async def _boot_async(runtime) -> None:
 
     try:
         await _set_bot_commands(runtime.bot_client)
-    except Exception as e:
-        log_bot.warning(f"could not set bot commands: {e}")
+    except Exception:
+        pass
 
     code = getattr(runtime, "pairing_code", "------")
-    log.info("╔════════════════════════════════════════════╗")
-    log.info(f"║  PAIRING CODE:  {code}                    ║")
-    log.info("╚════════════════════════════════════════════╝")
+    log.info(f"PAIRING CODE: {code}")
 
-    # ---- 6. Load user sessions ----
+    # ---- 5. user sessions ----
     log.info("loading user sessions…")
     try:
         await _load_user_sessions(runtime)
     except Exception as e:
-        log.warning(f"user session load failed: {e}")
+        log.warning(f"session load failed: {e}")
 
-    # ---- 7. Register handlers ----
+    # ---- 6. handlers ----
     log.info("registering bot handlers…")
     try:
         from .bot_handlers import _register_handlers, start_watchdog
@@ -258,7 +236,7 @@ async def _boot_async(runtime) -> None:
     except Exception as e:
         log.error(f"handler registration failed: {e}")
 
-    # ---- 8. Scheduler ----
+    # ---- 7. scheduler ----
     try:
         _start_scheduler(runtime)
     except Exception as e:
@@ -271,9 +249,8 @@ def _start_scheduler(runtime) -> None:
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
     except ImportError:
-        log.warning("APScheduler not installed; skipping scheduled tasks")
+        log.warning("APScheduler not installed")
         return
-
     sched = BackgroundScheduler(timezone="UTC")
 
     def _daily_backup():
@@ -281,12 +258,12 @@ def _start_scheduler(runtime) -> None:
             from .backup import create_and_send_backup
             create_and_send_backup(runtime)
         except Exception as e:
-            log.exception(f"daily backup failed: {e}")
+            log.exception(f"backup failed: {e}")
 
     sched.add_job(_daily_backup, "cron", hour=3, minute=0)
     sched.start()
     runtime._scheduler = sched
-    log.info("scheduler started (backup @ 3AM)")
+    log.info("scheduler started")
 
 
 def shutdown_all(runtime) -> None:
@@ -316,8 +293,8 @@ async def _shutdown_async(runtime) -> None:
         try:
             from .clock import shutdown_clock
             await shutdown_clock(client, uid)
-        except Exception as e:
-            log_clock.warning(f"shutdown strip failed for uid={uid}: {e}")
+        except Exception:
+            pass
         try:
             await client.disconnect()
         except Exception:
