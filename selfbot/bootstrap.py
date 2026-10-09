@@ -3,7 +3,7 @@ import asyncio
 import threading
 from pathlib import Path
 
-from .config import CONFIG, DB_PATH, get_api_credentials, android_fallback, save_config
+from .config import CONFIG, DB_PATH, android_fallback, get_api_credentials, save_config
 from .logging_setup import log, log_bot, log_clock
 from .store import users_store
 from .users import ensure_user
@@ -26,7 +26,6 @@ def _seed_owner() -> None:
     if int(u.get("diamonds", 0)) < 999999:
         from .economy import set_balance
         set_balance(owner, 999999)
-    # grant VIP 36500 days
     set_sub(owner, "vip", days=36500, auto_renew=True)
 
 
@@ -39,24 +38,15 @@ async def _make_bot_client(runtime):
     if not bot_token:
         raise RuntimeError("BOT_TOKEN not set.")
 
-    from .proxy import get_proxy_url, proxy_connector
-    proxy_url = get_proxy_url()
-
-    kwargs = {}
-    if proxy_url:
-        # use custom connector via connection class override
-        # Telethon supports proxy= for socks, but we go through our embedded bridge
-        kwargs["proxy"] = None  # bridge is transparent on 127.0.0.1:1080
-
     session_path = str(DB_PATH / "bot.session")
     try:
-        client = TelegramClient(session_path, api_id, api_hash, **kwargs)
+        client = TelegramClient(session_path, api_id, api_hash)
         await client.start(bot_token=bot_token)
         return client
     except ApiIdPublishedFloodError:
         log_bot.warning("API_ID_PUBLISHED_FLOOD — retrying with Android public creds")
         aid, ahash = android_fallback()
-        client = TelegramClient(session_path, aid, ahash, **kwargs)
+        client = TelegramClient(session_path, aid, ahash)
         await client.start(bot_token=bot_token)
         return client
 
@@ -107,19 +97,25 @@ async def _boot_async(runtime) -> None:
             bridge = SocksToWorkerBridge()
             await bridge.start()
             runtime._bridge = bridge
-            # probe (best-effort)
-            try:
-                res = test_proxy()
-                log.info(f"proxy probe: {res}")
-            except Exception as e:
-                log.warning(f"proxy probe failed: {e}")
+
+            def _probe():
+                try:
+                    res = test_proxy()
+                    log.info(f"proxy probe: {res}")
+                except Exception as e:
+                    log.warning(f"proxy probe failed: {e}")
+
+            threading.Thread(target=_probe, daemon=True, name="proxy-probe").start()
     except Exception as e:
         log.warning(f"SOCKS bridge failed to start: {e}")
 
     # 2) Seed owner
+    log.info("seeding owner…")
     _seed_owner()
+    log.info("owner seeded")
 
     # 3) Bot client
+    log.info("connecting bot client…")
     try:
         runtime.bot_client = await _make_bot_client(runtime)
         log_bot.info("bot client connected")
@@ -131,7 +127,6 @@ async def _boot_async(runtime) -> None:
     runtime.user_client = await _make_user_client(runtime)
     if runtime.user_client:
         log_bot.info("user client connected")
-        # strip time on startup if previous run ended uncleanly
         try:
             from .clock import strip_time_now
             await strip_time_now(runtime.user_client)
@@ -142,11 +137,12 @@ async def _boot_async(runtime) -> None:
             start_clock(runtime.user_client)
 
     # 5) Register handlers
+    log.info("registering bot handlers…")
     from .bot_handlers import _register_handlers, start_watchdog
     _register_handlers(runtime)
     await start_watchdog(runtime)
 
-    # 6) Scheduler (backups, auto-renew)
+    # 6) Scheduler
     _start_scheduler(runtime)
 
     log.info("=== SELF BOT ready ===")
@@ -186,7 +182,6 @@ def _start_scheduler(runtime) -> None:
 # Shutdown
 # ---------------------------------------------------------------------------
 def shutdown_all(runtime) -> None:
-    """Synchronous shutdown from atexit / signal handler."""
     if runtime is None:
         return
     try:
@@ -209,26 +204,22 @@ async def _shutdown_async(runtime) -> None:
         await stop_watchdog(runtime)
     except Exception:
         pass
-    # strip time from name
     try:
         if runtime.user_client:
             from .clock import shutdown_clock
             await shutdown_clock(runtime.user_client)
     except Exception as e:
         log_clock.warning(f"shutdown strip failed: {e}")
-    # stop bridge
     try:
         if getattr(runtime, "_bridge", None):
             await runtime._bridge.stop()
     except Exception:
         pass
-    # stop scheduler
     try:
         if getattr(runtime, "_scheduler", None):
             runtime._scheduler.shutdown(wait=False)
     except Exception:
         pass
-    # disconnect clients
     try:
         if runtime.user_client:
             await runtime.user_client.disconnect()
