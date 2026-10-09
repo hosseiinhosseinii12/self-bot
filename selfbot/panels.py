@@ -1,8 +1,8 @@
 """Inline keyboard panels for the Telegram bot.
 
-- Color-coded buttons (success=green, danger=red, primary=blue)
-- Live font previews on buttons
-- Clean, ordered layouts
+- Color-coded action buttons (green/red/blue)
+- ALL Back buttons are colorless (default Telegram style)
+- Job flow: group first, then interval/duration/text
 """
 from typing import List, Optional
 
@@ -16,7 +16,7 @@ except ImportError:
 
 
 # ===========================================================================
-# Font samples for previews
+# Font previews
 # ===========================================================================
 def _sample_name_font(font: str) -> str:
     try:
@@ -32,6 +32,11 @@ def _sample_clock_font(font: str) -> str:
         return apply_clock_font("123", font, custom="")
     except Exception:
         return "123"
+
+
+def _back_btn(data: bytes = b"nav:main"):
+    """A back button — always colorless."""
+    return Button.inline("◀️ Back", data)
 
 
 # ===========================================================================
@@ -80,7 +85,7 @@ def main_panel_text(user_id: int = None) -> str:
 # Status
 # ===========================================================================
 def status_buttons() -> List[List]:
-    return [[Button.inline("◀️ Back", b"nav:main", style="primary")]]
+    return [[_back_btn(b"nav:main")]]
 
 
 def status_text(user_id: int = None) -> str:
@@ -108,7 +113,7 @@ def settings_buttons() -> List[List]:
         [Button.inline("⏱ Interval", b"set:interval", style="primary"),
          Button.inline("🌍 Timezone", b"set:timezone", style="primary")],
         [Button.inline("🗣 Language", b"set:language", style="primary")],
-        [Button.inline("◀️ Back", b"nav:main", style="primary")],
+        [_back_btn(b"nav:main")],
     ]
 
 
@@ -133,7 +138,7 @@ def appearance_buttons() -> List[List]:
          Button.inline("🕐 Clock font", b"app:clockfont", style="primary")],
         [Button.inline("🅰️ Custom name font", b"app:customname", style="primary"),
          Button.inline("0️⃣ Custom clock font", b"app:customclock", style="primary")],
-        [Button.inline("◀️ Back", b"nav:main", style="primary")],
+        [_back_btn(b"nav:main")],
     ]
 
 
@@ -163,7 +168,7 @@ def appearance_text(user_id: int = None) -> str:
 
 
 # ===========================================================================
-# Jobs
+# Jobs list
 # ===========================================================================
 def jobs_buttons() -> List[List]:
     from .jobs import active_count
@@ -171,7 +176,7 @@ def jobs_buttons() -> List[List]:
         [Button.inline(f"➕ New job ({active_count()})", b"job:new", style="success")],
         [Button.inline("📋 List jobs", b"job:list", style="primary"),
          Button.inline("⏹ Stop all", b"job:stopall", style="danger")],
-        [Button.inline("◀️ Back", b"nav:main", style="primary")],
+        [_back_btn(b"nav:main")],
     ]
 
 
@@ -180,7 +185,6 @@ def jobs_text(user_id: int = None) -> str:
     from .economy import cost_job
 
     uid = int(user_id or CONFIG.get("owner_id", 338266658))
-    settings = get_user_settings(uid)
     lines = ["**🔁 Jobs**", ""]
     jobs = active_jobs(owner_id=uid)
     if not jobs:
@@ -189,19 +193,38 @@ def jobs_text(user_id: int = None) -> str:
         for j in jobs:
             lines.append(f"• `{j['id']}` every {j['interval']}s for {j['duration']}m — {j['sent']} sent")
     lines.append("")
-    target = settings.get("job_target")
-    if target:
-        lines.append(f"🎯 Target: `{target}`")
-    else:
-        lines.append("⚠️ No target group set")
     lines.append(f"💸 Cost per job: **{cost_job()} 💎**")
     return "\n".join(lines)
 
 
 # ===========================================================================
-# Job creation flow
+# JOB FLOW — Step 1: Select group
 # ===========================================================================
-def job_setup_buttons() -> List[List]:
+def job_group_buttons(has_recent: bool = False) -> List[List]:
+    rows = []
+    if has_recent:
+        rows.append([Button.inline("🔁 Reuse last group", b"job:group:reuse", style="primary")])
+    rows.append([Button.inline("🎯 Select a group", b"job:group:select", style="success")])
+    rows.append([_back_btn(b"nav:jobs")])
+    return rows
+
+
+def job_group_text(has_recent: bool = False, recent_id: int = None) -> str:
+    txt = (
+        "**🔁 New Repeat Job**\n\n"
+        "**Step 1/4 — Target group**\n\n"
+        "Which group should the messages be sent to?\n\n"
+        "Tap **🎯 Select a group** and choose from your chat list."
+    )
+    if has_recent and recent_id:
+        txt += f"\n\n_Last used: `{recent_id}`_"
+    return txt
+
+
+# ===========================================================================
+# JOB FLOW — Step 2: Interval
+# ===========================================================================
+def job_interval_buttons() -> List[List]:
     return [
         [Button.inline("⚡ 1 min", b"job:interval:1", style="danger"),
          Button.inline("🕐 5 min", b"job:interval:5", style="primary")],
@@ -209,20 +232,23 @@ def job_setup_buttons() -> List[List]:
          Button.inline("🕓 30 min", b"job:interval:30", style="primary")],
         [Button.inline("🕕 60 min", b"job:interval:60", style="primary")],
         [Button.inline("✏️ Custom interval", b"job:interval:custom", style="success")],
-        [Button.inline("◀️ Back", b"nav:jobs", style="primary")],
+        [_back_btn(b"job:setup:back")],
     ]
 
 
-def job_setup_text() -> str:
+def job_interval_text(target_id: int) -> str:
     return (
         "**🔁 New Repeat Job**\n\n"
-        "**Step 1/3 — Interval**\n\n"
-        "How often should the message be sent?\n\n"
-        "Choose a preset or tap **Custom**."
+        "**Step 2/4 — Interval**\n\n"
+        f"✅ Target: `{target_id}`\n\n"
+        "How often should the message be sent?"
     )
 
 
-def job_duration_buttons(interval: int) -> List[List]:
+# ===========================================================================
+# JOB FLOW — Step 3: Duration
+# ===========================================================================
+def job_duration_buttons() -> List[List]:
     return [
         [Button.inline("⏱ 1 min", b"job:duration:1", style="primary"),
          Button.inline("⏱ 5 min", b"job:duration:5", style="primary")],
@@ -232,36 +258,55 @@ def job_duration_buttons(interval: int) -> List[List]:
          Button.inline("⏱ 6 hours", b"job:duration:360", style="primary")],
         [Button.inline("⏱ 12 hours", b"job:duration:720", style="primary")],
         [Button.inline("✏️ Custom duration", b"job:duration:custom", style="success")],
-        [Button.inline("◀️ Back", b"job:setup:back", style="primary")],
+        [_back_btn(b"job:setup:back")],
     ]
 
 
-def job_duration_text(interval: int) -> str:
+def job_duration_text(target_id: int, interval_min: int) -> str:
     return (
         "**🔁 New Repeat Job**\n\n"
-        f"**Step 2/3 — Duration**\n\n"
-        f"✅ Interval: **{interval} min**\n\n"
+        "**Step 3/4 — Duration**\n\n"
+        f"✅ Target: `{target_id}`\n"
+        f"✅ Interval: {interval_min} min\n\n"
         "How long should the job run?"
     )
 
 
+# ===========================================================================
+# JOB FLOW — Step 4: Message
+# ===========================================================================
 def job_text_buttons() -> List[List]:
     return [
         [Button.inline("✏️ Enter text", b"job:text:enter", style="primary")],
         [Button.inline("📎 Upload .txt", b"job:text:upload", style="success")],
-        [Button.inline("◀️ Back", b"job:setup:back", style="primary")],
+        [_back_btn(b"job:setup:back")],
     ]
 
 
-def job_text_prompt() -> str:
-    return (
-        "**🔁 New Repeat Job**\n\n"
-        "**Step 3/3 — Message**\n\n"
-        "Send the text you want to repeat.\n\n"
-        "**Variables:** `{time}` `{date}` `{job_id}` `{sent}` `{name}`"
-    )
+def job_text_prompt(target_id: int = None, interval_s: int = 0,
+                    duration_m: int = 0) -> str:
+    lines = [
+        "**🔁 New Repeat Job**",
+        "",
+        "**Step 4/4 — Message**",
+        "",
+    ]
+    if target_id:
+        lines.append(f"✅ Target: `{target_id}`")
+    if interval_s:
+        lines.append(f"✅ Interval: {interval_s}s")
+    if duration_m:
+        lines.append(f"✅ Duration: {duration_m} min")
+    lines.append("")
+    lines.append("Send the text you want to repeat.")
+    lines.append("")
+    lines.append("**Variables:** `{time}` `{date}` `{job_id}` `{sent}` `{name}`")
+    return "\n".join(lines)
 
 
+# ===========================================================================
+# JOB FLOW — Step 5: Confirm
+# ===========================================================================
 def job_confirm_buttons(job: dict) -> List[List]:
     interval = job.get("interval", 0)
     duration = job.get("duration", 0)
@@ -280,7 +325,7 @@ def job_confirm_buttons(job: dict) -> List[List]:
         rows.append([Button.inline("✅ Start job", b"job:confirm:start", style="success")])
     else:
         rows.append([Button.inline("⚠️ Cannot start", b"job:confirm:blocked", style="danger")])
-    rows.append([Button.inline("◀️ Back", b"job:setup:back", style="primary")])
+    rows.append([_back_btn(b"job:setup:back")])
     rows.append([Button.inline("❌ Cancel", b"nav:jobs", style="danger")])
     return rows
 
@@ -317,14 +362,8 @@ def job_confirm_text(job: dict) -> str:
 
 
 # ===========================================================================
-# Group selector — uses Telegram's native peer picker
+# Group selector — Reply Keyboard
 # ===========================================================================
-def group_selector_buttons() -> List[List]:
-    return [
-        [Button.inline("◀️ Back", b"nav:jobs", style="primary")],
-    ]
-
-
 def group_selector_text() -> str:
     return (
         "**🎯 Select Target Group**\n\n"
@@ -334,7 +373,6 @@ def group_selector_text() -> str:
 
 
 def group_selector_reply_keyboard():
-    """Reply keyboard with `KeyboardButtonRequestPeer` for group selection."""
     try:
         from telethon.tl.types import (
             KeyboardButtonRequestPeer,
@@ -374,7 +412,7 @@ def account_buttons() -> List[List]:
          Button.inline("🤝 Referral", b"acc:referral", style="primary")],
         [Button.inline("🔔 Notifications", b"acc:notify", style="primary")],
         [Button.inline("🔐 QR Login", b"acc:qrlogin", style="success")],
-        [Button.inline("◀️ Back", b"nav:main", style="primary")],
+        [_back_btn(b"nav:main")],
     ]
 
 
@@ -397,7 +435,7 @@ def account_text(user_id: int = None) -> str:
 # Help
 # ===========================================================================
 def help_buttons() -> List[List]:
-    return [[Button.inline("◀️ Back", b"nav:main", style="primary")]]
+    return [[_back_btn(b"nav:main")]]
 
 
 def help_text() -> str:
@@ -415,9 +453,6 @@ def help_text() -> str:
         "• 🔁 Jobs — schedule repeated messages\n"
         "• 💎 Account — balance, requests\n"
         "• 🌐 Web Panel — open your account on the web\n\n"
-        "**Repeat jobs (in bot DM):**\n"
-        "`.rep <seconds> <minutes> <text>` — start\n"
-        "`.stop` — stop all\n\n"
         "**Variables:** `{time}` `{date}` `{job_id}` `{sent}` `{name}`"
     )
 
@@ -429,7 +464,7 @@ def language_buttons() -> List[List]:
     return [
         [Button.inline("English", b"set:lang:en", style="primary"),
          Button.inline("فارسی", b"set:lang:fa", style="primary")],
-        [Button.inline("◀️ Back", b"nav:settings", style="primary")],
+        [_back_btn(b"nav:settings")],
     ]
 
 
@@ -452,7 +487,7 @@ def notify_buttons() -> List[List]:
         [Button.inline(f"{mark('job_completion')} Job completion", b"notify:job_completion", style="primary")],
         [Button.inline(f"{mark('diamond_changes')} Diamond changes", b"notify:diamond_changes", style="primary")],
         [Button.inline(f"{mark('subscription_expiry')} Subscription expiry", b"notify:subscription_expiry", style="primary")],
-        [Button.inline("◀️ Back", b"nav:account", style="primary")],
+        [_back_btn(b"nav:account")],
     ]
 
 
