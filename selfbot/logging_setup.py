@@ -11,7 +11,7 @@ _log_queue: "queue.Queue[logging.LogRecord]" = queue.Queue(-1)
 
 
 # ---------------------------------------------------------------------------
-# Ensure EVERY LogRecord has a 'service' attribute (Flask, APScheduler, etc.)
+# Every LogRecord gets a `service` attribute. Never overridden by extra.
 # ---------------------------------------------------------------------------
 _original_factory = logging.getLogRecordFactory()
 
@@ -27,15 +27,15 @@ logging.setLogRecordFactory(_record_factory)
 
 
 class ServiceAdapter(logging.LoggerAdapter):
-    """Adds a `service` context without conflicting with the record factory."""
+    """Prefixes the message with [service]. Does NOT set record.service.
+
+    The LogRecordFactory already provides record.service, so passing it via
+    `extra` would raise KeyError("Attempt to overwrite 'service'").
+    """
 
     def process(self, msg, kwargs):
-        extra = kwargs.setdefault("extra", {})
-        # Only set if not already present — prevents KeyError when the
-        # LogRecordFactory already populated it.
-        if "service" not in extra:
-            extra["service"] = self.extra.get("service", "self-bot")
-        return msg, kwargs
+        service = self.extra.get("service", "self-bot")
+        return f"[{service}] {msg}", kwargs
 
 
 def _build_root() -> logging.Logger:

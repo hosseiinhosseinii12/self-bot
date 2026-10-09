@@ -12,24 +12,36 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(BASE_DIR))
 
-from selfbot.config import CONFIG, DB_PATH, acquire_lock, release_lock  # noqa: E402
-from selfbot.logging_setup import log, log_bot, log_flask               # noqa: E402
-from selfbot.bootstrap import boot_all, shutdown_all                    # noqa: E402
-from selfbot.admin_panel import build_admin_app                         # noqa: E402
-from selfbot.user_panel import build_user_app                           # noqa: E402
-from selfbot.api import attach_api_routes                               # noqa: E402
-from selfbot.bot_handlers import build_bot_runtime                      # noqa: E402
+from selfbot.config import CONFIG, DB_PATH, release_lock  # noqa: E402
+from selfbot.logging_setup import log, log_bot, log_flask  # noqa: E402
+from selfbot.bootstrap import boot_all, shutdown_all       # noqa: E402
+from selfbot.admin_panel import build_admin_app            # noqa: E402
+from selfbot.user_panel import build_user_app              # noqa: E402
+from selfbot.api import attach_api_routes                  # noqa: E402
+from selfbot.bot_handlers import build_bot_runtime         # noqa: E402
 
-# --- Locks & lifecycle ------------------------------------------------------
-# Only one process should hold the file lock. Under Gunicorn with N workers,
-# this means only the first worker gets it; others skip booting the bot.
+
+# --- File lock (fcntl) — safe for Gunicorn multi-worker --------------------
+_lock_fh = None
+_HAS_LOCK = False
+
 try:
-    acquire_lock()
+    import fcntl
+    _lock_fh = open(DB_PATH / "lock", "w")
+    fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    _lock_fh.write(str(os.getpid()))
+    _lock_fh.flush()
     _HAS_LOCK = True
-except SystemExit:
+except (BlockingIOError, OSError):
     _HAS_LOCK = False
+    if _lock_fh:
+        try:
+            _lock_fh.close()
+        except Exception:
+            pass
+        _lock_fh = None
 except Exception:
-    _HAS_LOCK = True  # non-fatal — continue
+    _HAS_LOCK = False
 
 
 _runtime = None
@@ -75,11 +87,11 @@ def _ensure_started():
     t.start()
 
 
-# Only boot if we hold the lock (single-worker scenario, or first worker wins)
 if _HAS_LOCK:
     _ensure_started()
 else:
-    log_flask.info("skipping bot boot in this worker (lock held by another)")
+    # Quietly skip — another worker owns the bot.
+    pass
 
 
 # --- Graceful shutdown ------------------------------------------------------
@@ -91,6 +103,13 @@ def _on_exit():
         shutdown_all(_get_runtime())
     except Exception as e:
         log.error(f"shutdown error: {e}")
+    try:
+        if _lock_fh:
+            import fcntl
+            fcntl.flock(_lock_fh, fcntl.LOCK_UN)
+            _lock_fh.close()
+    except Exception:
+        pass
     try:
         release_lock()
     except Exception:
