@@ -1,19 +1,14 @@
-"""Inline keyboard panels for the Telegram bot (English + Persian).
+"""Inline keyboard panels for the Telegram bot.
 
-Two panels:
-  * Owner panel: full control (clock, jobs, settings, memory, ...)
-  * User panel:  for regular users (web panel, account, requests, referral)
-
-Button styles are minimal — most buttons stay default to match the
-clean monochrome admin theme.
+Everyone gets the full control panel now.
+No tiers, no plans — the economy is pure diamonds.
 """
 import random
 from typing import List, Optional
 
 from .config import CONFIG
 from .i18n import t
-from .subscriptions import days_left, effective_plan
-from .users import get_user
+from .users import get_user, get_user_settings
 
 try:
     from telethon import Button
@@ -22,240 +17,217 @@ except ImportError:
 
 
 # ===========================================================================
-# Owner: Main panel
+# Main panel (for everyone — owner + regular users)
 # ===========================================================================
 def main_panel_buttons() -> List[List]:
     return [
-        [Button.inline(t("btn_on"), b"clock:on", style="success"),
-         Button.inline(t("btn_off"), b"clock:off", style="danger")],
-        [Button.inline(t("btn_status"), b"nav:status", style="primary")],
-        [Button.inline(t("btn_settings"), b"nav:settings", style="primary"),
-         Button.inline(t("btn_appearance"), b"nav:appearance", style="primary")],
-        [Button.inline(t("btn_jobs"), b"nav:jobs", style="primary"),
-         Button.inline(t("btn_account"), b"nav:account", style="primary")],
-        [Button.inline(t("btn_memory"), b"nav:memory", style="primary"),
-         Button.inline(t("btn_help"), b"nav:help", style="primary")],
+        [Button.inline("🟢 Clock ON", b"clock:on", style="success"),
+         Button.inline("🔴 Clock OFF", b"clock:off", style="danger")],
+        [Button.inline("📊 Status", b"nav:status")],
+        [Button.inline("⚙️ Settings", b"nav:settings"),
+         Button.inline("🎨 Appearance", b"nav:appearance")],
+        [Button.inline("🔁 Jobs", b"nav:jobs"),
+         Button.inline("💎 Account", b"nav:account")],
+        [Button.inline("🌐 Web Panel", b"nav:webpanel"),
+         Button.inline("❓ Help", b"nav:help")],
     ]
 
 
-def main_panel_text() -> str:
+def main_panel_text(user_id: int = None) -> str:
     from .clock import last_written
     from .economy import cost_clock, cost_job, get_balance
 
-    owner = int(CONFIG.get("owner_id", 338266658))
-    state = "🟢 ON" if CONFIG.get("clock_on") else "🔴 OFF"
-    base = CONFIG.get("base_name", "User")
-    interval = CONFIG.get("interval", 5)
-    tz = CONFIG.get("timezone", "UTC")
-    last = last_written() or "—"
-    plan = effective_plan(owner)
-    bal = get_balance(owner)
-
-    if plan in ("free", "basic"):
-        costs = (
-            f"Clock update: {cost_clock()} 💎  •  "
-            f"New job: {cost_job()} 💎  •  "
-            f"Job message: 1 💎"
-        )
-    else:
-        costs = f"Plan `{plan}` — no diamond cost per update."
+    uid = int(user_id or CONFIG.get("owner_id", 338266658))
+    settings = get_user_settings(uid)
+    state = "🟢 ON" if settings.get("clock_on") else "🔴 OFF"
+    base = settings.get("base_name", "User")
+    interval = settings.get("interval", 5)
+    tz = settings.get("timezone", "UTC")
+    last = last_written(uid) or "—"
+    bal = get_balance(uid)
 
     return (
-        f"**{t('main_panel')}**\n\n"
+        f"**Control Panel**\n\n"
         f"Clock: {state}\n"
-        f"{t('interval')}: {interval} min\n"
-        f"{t('timezone')}: {tz}\n"
-        f"{t('base_name')}: `{base}`\n"
+        f"Interval: {interval} min\n"
+        f"Timezone: {tz}\n"
+        f"Base name: `{base}`\n"
         f"Last name: `{last}`\n\n"
-        f"💎 Balance: **{bal}**  •  Plan: **{plan}**\n"
-        f"{costs}"
+        f"💎 Balance: **{bal}**\n"
+        f"Costs: update {cost_clock()} 💎 · new job {cost_job()} 💎"
     )
 
 
 # ===========================================================================
-# Owner: Status
+# Status
 # ===========================================================================
 def status_buttons() -> List[List]:
-    return [[Button.inline(t("btn_back"), b"nav:main")]]
+    return [[Button.inline("◀️ Back", b"nav:main")]]
 
 
-def status_text() -> str:
+def status_text(user_id: int = None) -> str:
     from .clock import last_written
-    state = t("status_on") if CONFIG.get("clock_on") else t("status_off")
+    uid = int(user_id or CONFIG.get("owner_id", 338266658))
+    settings = get_user_settings(uid)
+    state = "ON" if settings.get("clock_on") else "OFF"
     return (
-        f"**{t('btn_status')}**\n\n"
-        f"{state}\n"
-        f"{t('interval')}: {CONFIG.get('interval', 5)} min\n"
-        f"{t('timezone')}: {CONFIG.get('timezone', 'UTC')}\n"
-        f"{t('base_name')}: `{CONFIG.get('base_name', 'User')}`\n"
-        f"{t('name_font')}: {CONFIG.get('name_font', 'normal')}\n"
-        f"{t('clock_font')}: {CONFIG.get('clock_font', 'double')}\n"
-        f"Last written: `{last_written() or '—'}`"
+        f"**Status**\n\n"
+        f"Clock: {state}\n"
+        f"Interval: {settings.get('interval', 5)} min\n"
+        f"Timezone: {settings.get('timezone', 'UTC')}\n"
+        f"Base name: `{settings.get('base_name', 'User')}`\n"
+        f"Name font: {settings.get('name_font', 'normal')}\n"
+        f"Clock font: {settings.get('clock_font', 'double')}\n"
+        f"Last written: `{last_written(uid) or '—'}`"
     )
 
 
 # ===========================================================================
-# Owner: Settings
+# Settings
 # ===========================================================================
 def settings_buttons() -> List[List]:
     return [
-        [Button.inline("⏱ " + t("interval"), b"set:interval", style="primary"),
-         Button.inline("🌍 " + t("timezone"), b"set:timezone", style="primary")],
-        [Button.inline("🗣 " + t("language"), b"set:language", style="primary")],
-        [Button.inline(t("btn_back"), b"nav:main")],
+        [Button.inline("⏱ Interval", b"set:interval"),
+         Button.inline("🌍 Timezone", b"set:timezone")],
+        [Button.inline("🗣 Language", b"set:language")],
+        [Button.inline("◀️ Back", b"nav:main")],
     ]
 
 
-def settings_text() -> str:
+def settings_text(user_id: int = None) -> str:
+    uid = int(user_id or CONFIG.get("owner_id", 338266658))
+    settings = get_user_settings(uid)
     return (
-        f"**{t('btn_settings')}**\n\n"
-        f"{t('interval')}: {CONFIG.get('interval', 5)} min\n"
-        f"{t('timezone')}: {CONFIG.get('timezone', 'UTC')}\n"
-        f"{t('language')}: {CONFIG.get('language', 'en')}"
+        f"**Settings**\n\n"
+        f"Interval: {settings.get('interval', 5)} min\n"
+        f"Timezone: {settings.get('timezone', 'UTC')}\n"
+        f"Language: {CONFIG.get('language', 'en')}"
     )
 
 
 # ===========================================================================
-# Owner: Appearance
+# Appearance
 # ===========================================================================
 def appearance_buttons() -> List[List]:
     return [
-        [Button.inline("✏️ " + t("base_name"), b"app:base", style="primary")],
-        [Button.inline("🔤 " + t("name_font"), b"app:namefont", style="primary"),
-         Button.inline("🕐 " + t("clock_font"), b"app:clockfont", style="primary")],
-        [Button.inline("🅰️ Custom name font", b"app:customname", style="primary"),
-         Button.inline("0️⃣ Custom clock font", b"app:customclock", style="primary")],
-        [Button.inline(t("btn_back"), b"nav:main")],
+        [Button.inline("✏️ Base name", b"app:base")],
+        [Button.inline("🔤 Name font", b"app:namefont"),
+         Button.inline("🕐 Clock font", b"app:clockfont")],
+        [Button.inline("🅰️ Custom name font", b"app:customname"),
+         Button.inline("0️⃣ Custom clock font", b"app:customclock")],
+        [Button.inline("◀️ Back", b"nav:main")],
     ]
 
 
-def appearance_text() -> str:
+def appearance_text(user_id: int = None) -> str:
+    uid = int(user_id or CONFIG.get("owner_id", 338266658))
+    settings = get_user_settings(uid)
     return (
-        f"**{t('btn_appearance')}**\n\n"
-        f"{t('base_name')}: `{CONFIG.get('base_name', 'User')}`\n"
-        f"{t('name_font')}: {CONFIG.get('name_font', 'normal')}\n"
-        f"{t('clock_font')}: {CONFIG.get('clock_font', 'double')}\n"
-        f"Custom name font: {'set' if CONFIG.get('custom_name_font') else '—'}\n"
-        f"Custom clock font: {'set' if CONFIG.get('custom_clock_font') else '—'}"
+        f"**Appearance**\n\n"
+        f"Base name: `{settings.get('base_name', 'User')}`\n"
+        f"Name font: {settings.get('name_font', 'normal')}\n"
+        f"Clock font: {settings.get('clock_font', 'double')}\n"
+        f"Custom name font: {'set' if settings.get('custom_name_font') else '—'}\n"
+        f"Custom clock font: {'set' if settings.get('custom_clock_font') else '—'}"
     )
 
 
 # ===========================================================================
-# Owner: Jobs list
+# Jobs
 # ===========================================================================
 def jobs_buttons() -> List[List]:
     from .jobs import active_count
-    from .subscriptions import plan_limits
-    owner = int(CONFIG.get("owner_id", 338266658))
-    lim = plan_limits(owner)
     return [
-        [Button.inline(f"➕ New job ({active_count()}/{lim['max_jobs']})",
-                       b"job:new", style="success")],
-        [Button.inline("📋 " + t("btn_jobs"), b"job:list", style="primary"),
+        [Button.inline(f"➕ New job ({active_count()})", b"job:new", style="success")],
+        [Button.inline("📋 List jobs", b"job:list"),
          Button.inline("⏹ Stop all", b"job:stopall", style="danger")],
-        [Button.inline("📁 Templates", b"job:templates", style="primary")],
-        [Button.inline(t("btn_back"), b"nav:main")],
+        [Button.inline("📁 Templates", b"job:templates")],
+        [Button.inline("◀️ Back", b"nav:main")],
     ]
 
 
-def jobs_text() -> str:
+def jobs_text(user_id: int = None) -> str:
     from .jobs import active_jobs
-    from .subscriptions import plan_limits
     from .economy import cost_job
 
-    owner = int(CONFIG.get("owner_id", 338266658))
-    lim = plan_limits(owner)
-    lines = [f"**{t('btn_jobs')}**", ""]
-    jobs = active_jobs()
+    uid = int(user_id or CONFIG.get("owner_id", 338266658))
+    lines = ["**Jobs**", ""]
+    jobs = active_jobs(owner_id=uid)
     if not jobs:
-        lines.append(t("no_jobs"))
+        lines.append("_No active jobs._")
     else:
         for j in jobs:
-            lines.append(
-                f"• `{j['id']}` every {j['interval']}s for {j['duration']}m — {j['sent']} sent"
-            )
+            lines.append(f"• `{j['id']}` every {j['interval']}s for {j['duration']}m — {j['sent']} sent")
     lines.append("")
     lines.append(f"Cost per new job: **{cost_job()} 💎**")
-    lines.append("")
-    lines.append(
-        f"Plan: {effective_plan(owner)} — max jobs {lim['max_jobs']}, "
-        f"min interval {lim['min_interval']}s, max duration {lim['max_duration']}m"
-    )
     return "\n".join(lines)
 
 
 # ===========================================================================
-# Owner: Job creation flow
+# Job creation flow
 # ===========================================================================
 def job_setup_buttons() -> List[List]:
     return [
         [Button.inline("⚡ 1 min", b"job:interval:1", style="danger"),
-         Button.inline("🕐 5 min", b"job:interval:5", style="primary")],
-        [Button.inline("⏰ 15 min", b"job:interval:15", style="primary"),
-         Button.inline("🕓 30 min", b"job:interval:30", style="primary")],
-        [Button.inline("🕕 60 min", b"job:interval:60", style="primary")],
-        [Button.inline("✏️ Custom interval", b"job:interval:custom", style="success")],
+         Button.inline("🕐 5 min", b"job:interval:5")],
+        [Button.inline("⏰ 15 min", b"job:interval:15"),
+         Button.inline("🕓 30 min", b"job:interval:30")],
+        [Button.inline("🕕 60 min", b"job:interval:60")],
+        [Button.inline("✏️ Custom interval", b"job:interval:custom", style="primary")],
         [Button.inline("◀️ Back", b"nav:jobs")],
     ]
 
 
 def job_setup_text() -> str:
     return (
-        "**🔁 New Repeat Job**\n\n"
+        "**New Repeat Job**\n\n"
         "**Step 1/3 — Interval**\n\n"
         "How often should the message be sent?\n\n"
-        "Choose a preset or tap **Custom** to enter your own value."
+        "Choose a preset or tap **Custom**."
     )
 
 
 def job_duration_buttons(interval: int) -> List[List]:
     return [
-        [Button.inline("⏱ 1 min", b"job:duration:1", style="primary"),
-         Button.inline("⏱ 5 min", b"job:duration:5", style="primary")],
-        [Button.inline("⏱ 30 min", b"job:duration:30", style="primary"),
-         Button.inline("⏱ 1 hour", b"job:duration:60", style="primary")],
-        [Button.inline("⏱ 3 hours", b"job:duration:180", style="primary"),
-         Button.inline("⏱ 6 hours", b"job:duration:360", style="primary")],
-        [Button.inline("⏱ 12 hours", b"job:duration:720", style="primary")],
-        [Button.inline("✏️ Custom duration", b"job:duration:custom", style="success")],
+        [Button.inline("⏱ 1 min", b"job:duration:1"),
+         Button.inline("⏱ 5 min", b"job:duration:5")],
+        [Button.inline("⏱ 30 min", b"job:duration:30"),
+         Button.inline("⏱ 1 hour", b"job:duration:60")],
+        [Button.inline("⏱ 3 hours", b"job:duration:180"),
+         Button.inline("⏱ 6 hours", b"job:duration:360")],
+        [Button.inline("⏱ 12 hours", b"job:duration:720")],
+        [Button.inline("✏️ Custom duration", b"job:duration:custom", style="primary")],
         [Button.inline("◀️ Back", b"job:setup:back")],
     ]
 
 
 def job_duration_text(interval: int) -> str:
     return (
-        "**🔁 New Repeat Job**\n\n"
+        "**New Repeat Job**\n\n"
         f"**Step 2/3 — Duration**\n\n"
-        f"Interval set to **{interval} min**.\n\n"
-        "How long should the job run?\n\n"
-        "Choose a preset or tap **Custom**."
+        f"Interval: **{interval} min**\n\n"
+        "How long should the job run?"
     )
 
 
 def job_text_buttons() -> List[List]:
     return [
-        [Button.inline("✏️ Enter text", b"job:text:enter", style="primary")],
-        [Button.inline("📎 Upload .txt", b"job:text:upload", style="success")],
+        [Button.inline("✏️ Enter text", b"job:text:enter")],
+        [Button.inline("📎 Upload .txt", b"job:text:upload")],
         [Button.inline("◀️ Back", b"job:setup:back")],
     ]
 
 
 def job_text_prompt() -> str:
     return (
-        "**🔁 New Repeat Job**\n\n"
+        "**New Repeat Job**\n\n"
         "**Step 3/3 — Message**\n\n"
         "Send the text you want to repeat.\n\n"
-        "**Variables available:**\n"
-        "`{time}` `{date}` `{job_id}` `{sent}` `{name}`\n\n"
-        "Tap **Enter text** or **Upload .txt**."
+        "**Variables:** `{time}` `{date}` `{job_id}` `{sent}` `{name}`"
     )
 
 
 def job_confirm_buttons(job: dict) -> List[List]:
-    from .subscriptions import plan_limits
-    owner = int(CONFIG.get("owner_id", 338266658))
-    lim = plan_limits(owner)
-
     interval = job.get("interval", 0)
     duration = job.get("duration", 0)
     text = job.get("text", "")
@@ -263,8 +235,8 @@ def job_confirm_buttons(job: dict) -> List[List]:
 
     can_start = (
         target is not None
-        and interval >= lim["min_interval"]
-        and duration <= lim["max_duration"]
+        and interval >= 60
+        and duration <= 720
         and text
     )
 
@@ -279,11 +251,8 @@ def job_confirm_buttons(job: dict) -> List[List]:
 
 
 def job_confirm_text(job: dict) -> str:
-    from .subscriptions import plan_limits, effective_plan
     from .economy import cost_job
 
-    owner = int(CONFIG.get("owner_id", 338266658))
-    lim = plan_limits(owner)
     interval = job.get("interval", 0)
     duration = job.get("duration", 0)
     text = job.get("text", "")
@@ -292,21 +261,20 @@ def job_confirm_text(job: dict) -> str:
     warnings = []
     if target is None:
         warnings.append("❌ No target group selected")
-    if interval < lim["min_interval"]:
-        warnings.append(f"❌ Min interval for `{effective_plan(owner)}` is **{lim['min_interval']}s**")
-    if duration > lim["max_duration"]:
-        warnings.append(f"❌ Max duration is **{lim['max_duration']} min**")
+    if interval < 60:
+        warnings.append("❌ Min interval is **60 seconds**")
+    if duration > 720:
+        warnings.append("❌ Max duration is **720 minutes**")
     if not text:
         warnings.append("❌ No message text set")
 
     status = "\n".join(warnings) if warnings else "✅ Ready to start"
 
     return (
-        "**🔁 Job Summary**\n\n"
+        "**Job Summary**\n\n"
         f"**Target:** `{target if target else '— not selected —'}`\n"
-        f"**Interval:** `{interval}` min\n"
+        f"**Interval:** `{interval}` s\n"
         f"**Duration:** `{duration}` min\n"
-        f"**Messages:** ~`{duration * 60 // max(interval, 1)}`\n"
         f"**Cost:** `{cost_job()}` 💎\n\n"
         f"**Message:**\n`{text[:200] or '(empty)'}`\n\n"
         f"{status}"
@@ -314,89 +282,79 @@ def job_confirm_text(job: dict) -> str:
 
 
 # ===========================================================================
-# Owner: Target group selection
+# Group selection (help-based, no Reply Keyboard)
 # ===========================================================================
-def group_selection_reply_buttons():
-    try:
-        from telethon.tl.types import (
-            KeyboardButtonRequestPeer,
-            RequestPeerTypeChat,
-            KeyboardButtonRow,
-            ReplyKeyboardMarkup,
-        )
-    except ImportError:
-        return None
-
-    return ReplyKeyboardMarkup(
-        rows=[
-            KeyboardButtonRow(
-                buttons=[
-                    KeyboardButtonRequestPeer(
-                        text="🎯 Select a group",
-                        button_id=random.randint(100000, 999999),
-                        peer_type=RequestPeerTypeChat(),
-                        max_quantity=1,
-                    )
-                ]
-            )
-        ],
-        resize=True,
-        single_use=True,
-        placeholder="Tap 🎯 to choose a group…",
-    )
+def group_selection_buttons() -> List[List]:
+    return [
+        [Button.inline("📖 How to find group ID", b"job:groupid:help")],
+        [Button.inline("◀️ Back", b"nav:jobs")],
+    ]
 
 
 def group_selection_text() -> str:
     return (
         "**🎯 Select Target Group**\n\n"
-        "Tap the **🎯 Select a group** button below your keyboard.\n\n"
-        "Telegram will open your chat list — pick the group you want."
+        "Send `/setgroup <chat_id>` to set the target group manually.\n\n"
+        "**How to get a chat ID:**\n"
+        "Forward a message from that group to @userinfobot — "
+        "it will show the group's ID (e.g. `-1001234567890`)."
+    )
+
+
+def group_id_help_text() -> str:
+    return (
+        "**How to find a group ID**\n\n"
+        "**Option 1 — @userinfobot:**\n"
+        "1. Add @userinfobot to the group\n"
+        "2. Send any message\n"
+        "3. The bot replies with the group ID (starts with `-100`)\n\n"
+        "**Option 2 — @RawDataBot:**\n"
+        "1. Add @RawDataBot to the group\n"
+        "2. Send any message\n"
+        "3. The bot replies with full JSON — look for `chat.id`\n\n"
+        "Then send to me: `/setgroup -1001234567890`"
     )
 
 
 # ===========================================================================
-# Owner: Account
+# Account
 # ===========================================================================
 def account_buttons() -> List[List]:
     return [
-        [Button.inline("💎 " + t("request_diamonds"), b"acc:reqdiamonds", style="primary")],
-        [Button.inline("⭐ " + t("request_subscription"), b"acc:reqsub", style="primary")],
-        [Button.inline("📜 " + t("my_requests"), b"acc:myreq", style="primary")],
-        [Button.inline("🤝 " + t("your_referral").split(":")[0], b"acc:referral", style="primary")],
-        [Button.inline("🔔 " + t("notify_prefs"), b"acc:notify", style="primary")],
-        [Button.inline("🔐 QR Login", b"acc:qrlogin", style="success")],
-        [Button.inline(t("btn_back"), b"nav:main")],
+        [Button.inline("💎 Request diamonds", b"acc:reqdiamonds")],
+        [Button.inline("📜 My requests", b"acc:myreq")],
+        [Button.inline("🤝 Referral", b"acc:referral")],
+        [Button.inline("🔔 Notifications", b"acc:notify")],
+        [Button.inline("🔐 QR Login", b"acc:qrlogin", style="primary")],
+        [Button.inline("◀️ Back", b"nav:main")],
     ]
 
 
-def account_text() -> str:
+def account_text(user_id: int = None) -> str:
     from .economy import cost_clock, cost_job, get_balance
 
-    owner = int(CONFIG.get("owner_id", 338266658))
-    u = get_user(owner) or {}
-    plan = effective_plan(owner)
-    days = days_left(owner)
-    bal = get_balance(owner)
+    uid = int(user_id or CONFIG.get("owner_id", 338266658))
+    u = get_user(uid) or {}
+    bal = get_balance(uid)
     return (
-        f"**{t('btn_account')}**\n\n"
-        f"{t('diamonds')}: **{bal}** 💎\n"
-        f"{t('plan')}: {plan}\n"
-        f"{t('days_left')}: {days}\n\n"
-        f"Costs: clock update {cost_clock()} 💎, new job {cost_job()} 💎\n\n"
-        f"{t('your_referral', code=u.get('referral_code', '—'))}"
+        f"**Account**\n\n"
+        f"💎 Balance: **{bal}**\n"
+        f"🆔 ID: `{uid}`\n"
+        f"🤝 Referral: `{u.get('referral_code', '—')}`\n\n"
+        f"Costs: update {cost_clock()} 💎 · job {cost_job()} 💎"
     )
 
 
 # ===========================================================================
-# Owner: Memory
+# Memory
 # ===========================================================================
 def memory_buttons() -> List[List]:
     return [
-        [Button.inline("🧠 View memory", b"mem:view", style="primary")],
+        [Button.inline("🧠 View memory", b"mem:view")],
         [Button.inline("🗑 Clear memory", b"mem:clear", style="danger"),
          Button.inline("♻️ Clear my state", b"mem:clearstate", style="danger")],
-        [Button.inline("📤 Dump JSON", b"mem:dump", style="primary")],
-        [Button.inline(t("btn_back"), b"nav:main")],
+        [Button.inline("📤 Dump JSON", b"mem:dump")],
+        [Button.inline("◀️ Back", b"nav:main")],
     ]
 
 
@@ -405,68 +363,59 @@ def memory_text() -> str:
     mem = memory_store.all()
     st = user_state_store.all()
     return (
-        f"**{t('btn_memory')}**\n\n"
+        f"**Memory**\n\n"
         f"Memory keys: {len(mem) if isinstance(mem, dict) else 0}\n"
         f"User state keys: {len(st) if isinstance(st, dict) else 0}"
     )
 
 
 # ===========================================================================
-# Owner: Help
+# Help
 # ===========================================================================
 def help_buttons() -> List[List]:
-    return [[Button.inline(t("btn_back"), b"nav:main")]]
+    return [[Button.inline("◀️ Back", b"nav:main")]]
 
 
 def help_text() -> str:
     return (
         "**Help**\n\n"
-        "Commands:\n"
-        "/start — main panel\n"
-        "/login — log in with phone → code\n"
-        "/logout — delete session\n"
-        "/account — diamonds + subscription + QR Login\n"
-        "/request — request diamonds or subscription\n"
-        "/myrequests — list your requests\n"
-        "/refer <code> — apply referral code\n"
-        "/name <base> — set base name\n"
-        "/font <name> — set name font\n"
-        "/clockfont <name> — set digit font\n"
-        "/tz <zone> — set timezone\n"
-        "/interval <n> — set interval (1–60 min)\n"
-        "/on — enable clock\n"
-        "/off — disable clock\n"
-        "/status — show current state\n"
-        "/memory — memory tools\n\n"
-        "QR Login:\n"
-        "Account → 🔐 QR Login — scan with the official Telegram app\n"
-        "(no SMS needed)\n\n"
-        "Repeat jobs (owner only, in bot DM):\n"
-        "`.rep <seconds> <minutes> <text>` — start a repeat job\n"
-        "`.stop` — stop jobs in this chat"
+        "**Commands:**\n"
+        "/start — open the panel\n"
+        "/help — this message\n"
+        "/login — log in to your Telegram account\n"
+        "/logout — log out\n"
+        "/setgroup <chat_id> — set target group for jobs\n\n"
+        "**Inside the panel:**\n"
+        "• Clock ON/OFF — start/stop name updates\n"
+        "• Settings — interval, timezone, language\n"
+        "• Appearance — base name, fonts\n"
+        "• Jobs — schedule repeated messages\n"
+        "• Account — balance, requests, referral\n"
+        "• Web Panel — open your account on the web\n\n"
+        "**Repeat jobs (in bot DM):**\n"
+        "`.rep <seconds> <minutes> <text>` — start\n"
+        "`.stop` — stop all\n\n"
+        "**Variables:** `{time}` `{date}` `{job_id}` `{sent}` `{name}`"
     )
 
 
 # ===========================================================================
-# Owner: Language picker
+# Language picker
 # ===========================================================================
 def language_buttons() -> List[List]:
     return [
-        [Button.inline("English", b"set:lang:en", style="primary"),
-         Button.inline("فارسی", b"set:lang:fa", style="primary")],
-        [Button.inline(t("btn_back"), b"nav:settings")],
+        [Button.inline("English", b"set:lang:en"),
+         Button.inline("فارسی", b"set:lang:fa")],
+        [Button.inline("◀️ Back", b"nav:settings")],
     ]
 
 
 def language_text() -> str:
-    return (
-        "**Language / زبان**\n\n"
-        f"Current: {CONFIG.get('language', 'en')}"
-    )
+    return f"**Language / زبان**\n\nCurrent: {CONFIG.get('language', 'en')}"
 
 
 # ===========================================================================
-# Owner: Notification preferences
+# Notifications
 # ===========================================================================
 def notify_buttons() -> List[List]:
     owner = int(CONFIG.get("owner_id", 338266658))
@@ -477,123 +426,39 @@ def notify_buttons() -> List[List]:
         return "✅" if notify.get(k, True) else "❌"
 
     return [
-        [Button.inline(f"{mark('job_completion')} {t('notify_job')}",
-                       b"notify:job_completion", style="primary")],
-        [Button.inline(f"{mark('diamond_changes')} {t('notify_diamond')}",
-                       b"notify:diamond_changes", style="primary")],
-        [Button.inline(f"{mark('subscription_expiry')} {t('notify_expiry')}",
-                       b"notify:subscription_expiry", style="primary")],
-        [Button.inline(t("btn_back"), b"nav:account")],
+        [Button.inline(f"{mark('job_completion')} Job completion", b"notify:job_completion")],
+        [Button.inline(f"{mark('diamond_changes')} Diamond changes", b"notify:diamond_changes")],
+        [Button.inline(f"{mark('subscription_expiry')} Subscription expiry", b"notify:subscription_expiry")],
+        [Button.inline("◀️ Back", b"nav:account")],
     ]
 
 
 def notify_text() -> str:
-    return f"**{t('notify_prefs')}**"
+    return "**Notifications**"
 
 
 # ===========================================================================
-# Owner: Plan picker
-# ===========================================================================
-def plan_buttons() -> List[List]:
-    return [
-        [Button.inline("Basic — 30 days", b"reqsub:basic", style="primary")],
-        [Button.inline("Pro — 30 days", b"reqsub:pro", style="primary")],
-        [Button.inline("VIP — 30 days", b"reqsub:vip", style="primary")],
-        [Button.inline(t("btn_back"), b"nav:account")],
-    ]
-
-
-def plan_text() -> str:
-    return (
-        f"**{t('request_subscription')}**\n\n"
-        "Pick a plan. An admin will review your request."
-    )
-
-
-# ===========================================================================
-# USER (non-owner) panel
+# User panel aliases (for backward compat — all users get the full panel now)
 # ===========================================================================
 def user_panel_buttons(user_id: int) -> List[List]:
-    """Clean, minimal user panel. No loud colors — all default style."""
-    return [
-        [Button.inline("🌐 My Web Panel", b"user:webpanel")],
-        [Button.inline("💎 My Account", b"user:account"),
-         Button.inline("📋 Help", b"user:help")],
-        [Button.inline("💎 Request diamonds", b"user:reqdiamonds"),
-         Button.inline("⭐ Request subscription", b"user:reqsub")],
-        [Button.inline("🤝 My referral", b"user:referral"),
-         Button.inline("📜 My requests", b"user:myreq")],
-    ]
+    return main_panel_buttons()
 
 
 def user_panel_text(user_id: int) -> str:
-    from .economy import get_balance
-    from .users import get_user
-
-    u = get_user(user_id) or {}
-    plan = effective_plan(user_id)
-    days = days_left(user_id)
-    bal = get_balance(user_id)
-    name = u.get("first_name") or "there"
-
-    return (
-        f"👋 **Hello {name}!**\n\n"
-        f"Welcome to **SELF BOT** — a Telegram profile clock service.\n\n"
-        f"💎 **Your balance:** {bal} diamonds\n"
-        f"📅 **Your plan:** {plan}\n"
-        f"⏳ **Days left:** {days}\n\n"
-        f"Use the buttons below to manage your account."
-    )
+    return main_panel_text(user_id)
 
 
 def user_account_buttons() -> List[List]:
-    return [
-        [Button.inline("💎 Request diamonds", b"user:reqdiamonds")],
-        [Button.inline("⭐ Request subscription", b"user:reqsub")],
-        [Button.inline("📜 My requests", b"user:myreq")],
-        [Button.inline("◀️ Back", b"user:home")],
-    ]
+    return account_buttons()
 
 
 def user_account_text(user_id: int) -> str:
-    from .economy import get_balance
-    from .users import get_user
-
-    u = get_user(user_id) or {}
-    plan = effective_plan(user_id)
-    days = days_left(user_id)
-    bal = get_balance(user_id)
-    referral_code = u.get("referral_code", "—")
-
-    return (
-        f"**👤 My Account**\n\n"
-        f"🆔 ID: `{user_id}`\n"
-        f"💎 Diamonds: **{bal}**\n"
-        f"📅 Plan: **{plan}**\n"
-        f"⏳ Days left: **{days}**\n"
-        f"🤝 Referral code: `{referral_code}`\n\n"
-        f"Use the buttons below to submit a request."
-    )
+    return account_text(user_id)
 
 
 def user_help_buttons() -> List[List]:
-    return [[Button.inline("◀️ Back", b"user:home")]]
+    return help_buttons()
 
 
 def user_help_text() -> str:
-    return (
-        "**📋 Help**\n\n"
-        "This bot updates your Telegram profile name with the current time.\n\n"
-        "**Available actions:**\n"
-        "• 🌐 My Web Panel — open your account on the web\n"
-        "• 💎 Request diamonds — ask the admin for diamonds\n"
-        "• ⭐ Request subscription — ask for a paid plan\n"
-        "• 📜 My requests — see your request history\n"
-        "• 🤝 My referral — share your referral code\n\n"
-        "**Plans:**\n"
-        "• Free — 1 job, min interval 300s\n"
-        "• Basic — 3 jobs, min interval 120s\n"
-        "• Pro — 10 jobs, min interval 60s\n"
-        "• VIP — 50 jobs, min interval 30s\n\n"
-        "For more info, contact the admin."
-    )
+    return help_text()
