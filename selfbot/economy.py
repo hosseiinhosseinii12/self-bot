@@ -1,36 +1,26 @@
-"""Diamond economy: balances, costs, transactions."""
+"""Diamond economy — DB-backed, atomic."""
 from datetime import datetime, timezone as dt_timezone
-from typing import Optional
 
-from .config import CONFIG, DB_PATH
+from .config import CONFIG
 from .logging_setup import log_econ
-from .store import transactions_store, users_store
+from . import db
 
 
 def _now_iso() -> str:
     return datetime.now(dt_timezone.utc).isoformat()
 
 
-# ---------------------------------------------------------------------------
-# Balance
-# ---------------------------------------------------------------------------
 def get_balance(user_id: int) -> int:
-    u = users_store.get(str(user_id)) or {}
-    return int(u.get("diamonds", 0))
+    u = db.get_user(user_id)
+    return int(u.get("diamonds", 0) or 0) if u else 0
 
 
 def set_balance(user_id: int, amount: int) -> None:
-    key = str(user_id)
-    u = users_store.get(key) or {}
-    u["diamonds"] = max(0, int(amount))
-    users_store.set(key, u)
+    db.upsert_user(user_id, diamonds=max(0, int(amount)))
 
 
-# ---------------------------------------------------------------------------
-# Transaction log
-# ---------------------------------------------------------------------------
 def _append_tx(user_id: int, amount: int, reason: str, balance_after: int,
-               kind: str = "grant", meta: Optional[dict] = None) -> None:
+               kind: str = "grant", meta=None) -> None:
     tx = {
         "id": f"tx_{int(datetime.now().timestamp() * 1000)}_{user_id}",
         "user_id": int(user_id),
@@ -41,18 +31,14 @@ def _append_tx(user_id: int, amount: int, reason: str, balance_after: int,
         "created_at": _now_iso(),
         "meta": meta or {},
     }
-    data = transactions_store.all()
-    if not isinstance(data, list):
-        data = []
-    data.append(tx)
-    if len(data) > 50000:
-        data = data[-50000:]
-    transactions_store.replace(data)
-    log_econ.info(f"tx user={user_id} {kind} amount={amount} reason={reason} bal={balance_after}")
+    db.add_tx(tx)
+    log_econ.info(
+        f"tx user={user_id} {kind} amount={amount} reason={reason} bal={balance_after}"
+    )
 
 
 def grant(user_id: int, amount: int, reason: str, kind: str = "grant",
-          meta: Optional[dict] = None) -> int:
+          meta=None) -> int:
     if amount <= 0:
         return get_balance(user_id)
     new_balance = get_balance(user_id) + int(amount)
@@ -61,8 +47,7 @@ def grant(user_id: int, amount: int, reason: str, kind: str = "grant",
     return new_balance
 
 
-def spend(user_id: int, amount: int, reason: str,
-          meta: Optional[dict] = None) -> bool:
+def spend(user_id: int, amount: int, reason: str, meta=None) -> bool:
     if amount <= 0:
         return True
     current = get_balance(user_id)
@@ -74,19 +59,12 @@ def spend(user_id: int, amount: int, reason: str,
     return True
 
 
-def refund(user_id: int, amount: int, reason: str, meta: Optional[dict] = None) -> None:
+def refund(user_id: int, amount: int, reason: str, meta=None) -> None:
     if amount <= 0:
         return
     grant(user_id, amount, reason, kind="refund", meta=meta)
 
 
-def has_balance(user_id: int, amount: int) -> bool:
-    return get_balance(user_id) >= amount
-
-
-# ---------------------------------------------------------------------------
-# Costs
-# ---------------------------------------------------------------------------
 def cost_clock() -> int:
     return int(CONFIG.get("diamond_cost_clock", 1))
 
@@ -107,36 +85,11 @@ def signup_bonus() -> int:
     return int(CONFIG.get("signup_bonus", 500))
 
 
-# ---------------------------------------------------------------------------
-# Stats helpers
-# ---------------------------------------------------------------------------
 def total_in_circulation() -> int:
-    total = 0
-    data = users_store.all()
-    if isinstance(data, dict):
-        for u in data.values():
-            total += int(u.get("diamonds", 0) or 0)
-    return total
+    conn = db.get_conn()
+    row = conn.execute("SELECT SUM(diamonds) AS s FROM users").fetchone()
+    return int(row["s"] or 0) if row else 0
 
 
-def hourly_consumption(hours: int = 24) -> list:
-    from datetime import datetime, timedelta, timezone as tz
-    now = datetime.now(tz.utc).replace(minute=0, second=0, microsecond=0)
-    buckets = {}
-    for i in range(hours, -1, -1):
-        h = now - timedelta(hours=i)
-        buckets[h.isoformat()] = 0
-    data = transactions_store.all()
-    if isinstance(data, list):
-        for tx in data:
-            if tx.get("kind") != "spend":
-                continue
-            try:
-                t = datetime.fromisoformat(tx["created_at"]).replace(
-                    minute=0, second=0, microsecond=0)
-            except Exception:
-                continue
-            key = t.isoformat()
-            if key in buckets:
-                buckets[key] += int(tx.get("amount", 0) or 0)
-    return [{"hour": k, "spent": v} for k, v in sorted(buckets.items())]
+def hourly_consumption(hours: int = 24):
+    return db.hourly_spend(hours)

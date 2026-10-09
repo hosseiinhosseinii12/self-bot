@@ -1,8 +1,38 @@
-"""Inline keyboard panels — QR Login in login screen, peer selector robust."""
+"""Inline keyboard panels for the Telegram bot.
+
+- Color-coded action buttons
+- ALL Back buttons are colorless
+- Job flow: group first (native Telegram picker), then interval/duration/text
+"""
 from typing import List, Optional
 
 from .config import CONFIG
 from .users import get_user, get_user_settings
+
+# ---- Peer picker imports (best-effort) ----
+HAS_PEER_PICKER = False
+KeyboardButtonRequestPeer = None
+RequestPeerTypeChat = None
+
+try:
+    from telethon.tl.types import (
+        KeyboardButtonRequestPeer,
+        RequestPeerTypeChat,
+    )
+    HAS_PEER_PICKER = True
+except Exception as _e1:
+    try:
+        from telethon.tl.types.bots import (  # type: ignore
+            KeyboardButtonRequestPeer,
+            RequestPeerTypeChat,
+        )
+        HAS_PEER_PICKER = True
+    except Exception as _e2:
+        try:
+            from .logging_setup import log_bot
+            log_bot.warning(f"peer picker types unavailable: {_e1} / {_e2}")
+        except Exception:
+            pass
 
 try:
     from telethon import Button
@@ -30,12 +60,11 @@ def _sample_clock_font(font: str) -> str:
 
 
 def _back_btn(data: bytes = b"nav:main"):
-    """A back button — always colorless."""
     return Button.inline("◀️ Back", data)
 
 
 # ===========================================================================
-# Login screen — now includes QR Login
+# Login
 # ===========================================================================
 def login_required_buttons() -> List[List]:
     return [
@@ -205,7 +234,10 @@ def jobs_text(user_id: int = None) -> str:
         lines.append("_No active jobs._")
     else:
         for j in jobs:
-            lines.append(f"• `{j['id']}` every {j['interval']}s for {j['duration']}m — {j['sent']} sent")
+            dur = "∞" if int(j.get("duration", 0) or 0) == 0 else f"{j['duration']}m"
+            lines.append(
+                f"• `{j['id']}` every {j['interval']}s for {dur} — {j['sent']} sent"
+            )
     lines.append("")
     lines.append(f"💸 Cost per job: **{cost_job()} 💎**")
     return "\n".join(lines)
@@ -218,7 +250,10 @@ def job_group_buttons(has_recent: bool = False) -> List[List]:
     rows = []
     if has_recent:
         rows.append([Button.inline("🔁 Reuse last group", b"job:group:reuse", style="primary")])
-    rows.append([Button.inline("🎯 Select a group", b"job:group:select", style="success")])
+    if HAS_PEER_PICKER:
+        rows.append([Button.inline("🎯 Select a group", b"job:group:select", style="success")])
+    else:
+        rows.append([Button.inline("✏️ Enter chat ID", b"job:group:manual", style="success")])
     rows.append([_back_btn(b"nav:jobs")])
     return rows
 
@@ -228,8 +263,11 @@ def job_group_text(has_recent: bool = False, recent_id: int = None) -> str:
         "**🔁 New Repeat Job**\n\n"
         "**Step 1/4 — Target group**\n\n"
         "Which group should the messages be sent to?\n\n"
-        "Tap **🎯 Select a group** and choose from your chat list."
     )
+    if HAS_PEER_PICKER:
+        txt += "Tap **🎯 Select a group** and pick from the Telegram UI."
+    else:
+        txt += "Tap **✏️ Enter chat ID** and send the group's ID."
     if has_recent and recent_id:
         txt += f"\n\n_Last used: `{recent_id}`_"
     return txt
@@ -271,6 +309,7 @@ def job_duration_buttons() -> List[List]:
         [Button.inline("⏱ 3 hours", b"job:duration:180", style="primary"),
          Button.inline("⏱ 6 hours", b"job:duration:360", style="primary")],
         [Button.inline("⏱ 12 hours", b"job:duration:720", style="primary")],
+        [Button.inline("♾ Unlimited (until stop)", b"job:duration:0", style="success")],
         [Button.inline("✏️ Custom duration", b"job:duration:custom", style="success")],
         [_back_btn(b"job:setup:back")],
     ]
@@ -282,7 +321,8 @@ def job_duration_text(target_id: int, interval_min: int) -> str:
         "**Step 3/4 — Duration**\n\n"
         f"✅ Target: `{target_id}`\n"
         f"✅ Interval: {interval_min} min\n\n"
-        "How long should the job run?"
+        "How long should the job run?\n\n"
+        "Tap **♾ Unlimited** to run until you stop it."
     )
 
 
@@ -309,8 +349,9 @@ def job_text_prompt(target_id: int = None, interval_s: int = 0,
         lines.append(f"✅ Target: `{target_id}`")
     if interval_s:
         lines.append(f"✅ Interval: {interval_s}s")
-    if duration_m:
-        lines.append(f"✅ Duration: {duration_m} min")
+    if duration_m is not None:
+        dur_str = "∞" if duration_m == 0 else f"{duration_m} min"
+        lines.append(f"✅ Duration: {dur_str}")
     lines.append("")
     lines.append("Send the text you want to repeat.")
     lines.append("")
@@ -323,17 +364,9 @@ def job_text_prompt(target_id: int = None, interval_s: int = 0,
 # ===========================================================================
 def job_confirm_buttons(job: dict) -> List[List]:
     interval = job.get("interval", 0)
-    duration = job.get("duration", 0)
     text = job.get("text", "")
     target = job.get("target")
-
-    can_start = (
-        target is not None
-        and interval >= 60
-        and duration <= 720
-        and text
-    )
-
+    can_start = (target is not None and interval >= 60 and text)
     rows = []
     if can_start:
         rows.append([Button.inline("✅ Start job", b"job:confirm:start", style="success")])
@@ -352,23 +385,22 @@ def job_confirm_text(job: dict) -> str:
     text = job.get("text", "")
     target = job.get("target")
 
+    duration_str = "∞ (unlimited)" if duration == 0 else f"{duration} min"
+
     warnings = []
     if target is None:
         warnings.append("❌ No target group")
     if interval < 60:
         warnings.append("❌ Min interval: 60 seconds")
-    if duration > 720:
-        warnings.append("❌ Max duration: 720 minutes")
     if not text:
         warnings.append("❌ No message text set")
-
     status = "\n".join(warnings) if warnings else "✅ Ready to start"
 
     return (
         "**🔁 Job Summary**\n\n"
         f"🎯 **Target:** `{target if target else '— not selected —'}`\n"
         f"⏱ **Interval:** `{interval}` s\n"
-        f"⏳ **Duration:** `{duration}` min\n"
+        f"⏳ **Duration:** `{duration_str}`\n"
         f"💸 **Cost:** `{cost_job()}` 💎\n\n"
         f"📝 **Message:**\n`{text[:200] or '(empty)'}`\n\n"
         f"{status}"
@@ -376,81 +408,42 @@ def job_confirm_text(job: dict) -> str:
 
 
 # ===========================================================================
-# Group selector — robust reply keyboard
+# Peer Picker — Telegram native UI
 # ===========================================================================
-def group_selector_text() -> str:
-    return (
-        "**🎯 Select Target Group**\n\n"
-        "Tap the **🎯 Select a group** button **below the input field** "
-        "(not in this message).\n\n"
-        "Telegram will open your chat list — pick the group you want.\n\n"
-        "_If the button does not appear, your Telegram client may be too old._"
-    )
-
-
-def group_selector_reply_keyboard():
-    """Return a ReplyKeyboardMarkup with the peer-request button.
-
-    Tries multiple import paths for maximum compatibility.
-    """
-    # --- Try to import all needed types ---
-    KeyboardButtonRequestPeer = None
-    RequestPeerTypeChat = None
-    KeyboardButtonRow = None
-    ReplyKeyboardMarkup = None
-
-    for mod_name in ("telethon.tl.types", "telethon.tl.types.messages_and_media"):
-        try:
-            import importlib
-            mod = importlib.import_module(mod_name)
-            if KeyboardButtonRequestPeer is None:
-                KeyboardButtonRequestPeer = getattr(mod, "KeyboardButtonRequestPeer", None)
-            if RequestPeerTypeChat is None:
-                RequestPeerTypeChat = getattr(mod, "RequestPeerTypeChat", None)
-            if KeyboardButtonRow is None:
-                KeyboardButtonRow = getattr(mod, "KeyboardButtonRow", None)
-            if ReplyKeyboardMarkup is None:
-                ReplyKeyboardMarkup = getattr(mod, "ReplyKeyboardMarkup", None)
-        except Exception:
-            pass
-
-    if not all([KeyboardButtonRequestPeer, RequestPeerTypeChat,
-                KeyboardButtonRow, ReplyKeyboardMarkup]):
+def make_peer_picker_button(button_id: int, label: str = "🎯 Select a group"):
+    """Return a KeyboardButtonRequestPeer instance, or None if unavailable."""
+    if not HAS_PEER_PICKER:
         return None
-
-    import random
+    if KeyboardButtonRequestPeer is None or RequestPeerTypeChat is None:
+        return None
     try:
-        req_btn = KeyboardButtonRequestPeer(
-            text="🎯 Select a group",
-            button_id=random.randint(100000, 999999),
+        return KeyboardButtonRequestPeer(
+            text=label,
+            button_id=button_id,
             peer_type=RequestPeerTypeChat(),
             max_quantity=1,
         )
-        row = KeyboardButtonRow(buttons=[req_btn])
-        kb = ReplyKeyboardMarkup(
-            rows=[row],
-            resize=True,
-            single_use=True,
-            placeholder="Tap 🎯 to choose a group…",
-        )
-        return kb
     except Exception as e:
-        # fallback signature (some Telethon versions use different kwargs)
         try:
-            req_btn = KeyboardButtonRequestPeer(
-                text="🎯 Select a group",
-                button_id=random.randint(100000, 999999),
-                peer_type=RequestPeerTypeChat(),
-                max_quantity=1,
-            )
-            kb = ReplyKeyboardMarkup(
-                rows=[[req_btn]],
-                resize=True,
-                single_use=True,
-            )
-            return kb
+            from .logging_setup import log_bot
+            log_bot.warning(f"could not construct KeyboardButtonRequestPeer: {e}")
         except Exception:
-            return None
+            pass
+        return None
+
+
+def group_selector_text() -> str:
+    return (
+        "**🎯 Select Target Group**\n\n"
+        "Tap the **🎯 Group** button that appeared **below the input field**.\n\n"
+        "Telegram will open your chat list — pick a group."
+    )
+
+
+def group_selector_help_buttons() -> List[List]:
+    return [
+        [_back_btn(b"nav:jobs")],
+    ]
 
 
 # ===========================================================================
@@ -528,9 +521,12 @@ def notify_buttons() -> List[List]:
         return "✅" if notify.get(k, True) else "❌"
 
     return [
-        [Button.inline(f"{mark('job_completion')} Job completion", b"notify:job_completion", style="primary")],
-        [Button.inline(f"{mark('diamond_changes')} Diamond changes", b"notify:diamond_changes", style="primary")],
-        [Button.inline(f"{mark('subscription_expiry')} Subscription expiry", b"notify:subscription_expiry", style="primary")],
+        [Button.inline(f"{mark('job_completion')} Job completion",
+                       b"notify:job_completion", style="primary")],
+        [Button.inline(f"{mark('diamond_changes')} Diamond changes",
+                       b"notify:diamond_changes", style="primary")],
+        [Button.inline(f"{mark('subscription_expiry')} Subscription expiry",
+                       b"notify:subscription_expiry", style="primary")],
         [_back_btn(b"nav:account")],
     ]
 

@@ -1,4 +1,7 @@
-"""Repeat jobs — per-user, no tiers. With detailed logging."""
+"""Repeat jobs — DB-backed, per-user, infinite duration supported.
+
+duration = 0 means "run forever until /stop".
+"""
 import asyncio
 import random
 import string
@@ -9,15 +12,16 @@ from typing import Dict, List, Optional
 from .config import CONFIG
 from .economy import cost_job, cost_job_message, spend
 from .logging_setup import log_jobs
-from .store import history_store
+from . import db
 
 MIN_REPEAT_SEC = 60
-MAX_DURATION_MIN = 720
-MAX_MESSAGES = 200
+MAX_DURATION_MIN = 0  # 0 = unlimited
+MAX_MESSAGES = 0      # 0 = unlimited
 MAX_HISTORY = 30
+MAX_TEMPLATES = 20
 
-_active_jobs: Dict[str, asyncio.Task] = {}
-_job_meta: Dict[str, dict] = {}
+# job_id -> asyncio.Task
+_active_tasks: Dict[str, asyncio.Task] = {}
 
 
 def _now_iso() -> str:
@@ -28,19 +32,35 @@ def _rand_id(n: int = 6) -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 
-def _append_history(entry: dict) -> None:
-    try:
-        data = history_store.all()
-        if not isinstance(data, list):
-            data = []
-        data.append(entry)
-        if len(data) > MAX_HISTORY:
-            data = data[-MAX_HISTORY:]
-        history_store.replace(data)
-    except Exception as e:
-        log_jobs.warning(f"history append failed: {e}")
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+def save_template(user_id: int, name: str, text: str) -> tuple:
+    existing = db.list_templates(user_id)
+    if name not in existing and len(existing) >= MAX_TEMPLATES:
+        return False, f"Template limit reached ({MAX_TEMPLATES})."
+    db.save_template(user_id, name, text)
+    return True, "saved"
 
 
+def load_template(user_id: int, name: str) -> Optional[str]:
+    return db.list_templates(user_id).get(name)
+
+
+def list_templates(user_id: int) -> dict:
+    return db.list_templates(user_id)
+
+
+def delete_template(user_id: int, name: str) -> bool:
+    if name in db.list_templates(user_id):
+        db.delete_template(user_id, name)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Variables
+# ---------------------------------------------------------------------------
 def render_variables(text: str, job: dict, sent_count: int) -> str:
     now = datetime.now()
     subs = {
@@ -56,19 +76,25 @@ def render_variables(text: str, job: dict, sent_count: int) -> str:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Create
+# ---------------------------------------------------------------------------
 def create_job(owner_id: int, chat_id: int, interval_seconds: int,
                duration_minutes: int, text: str) -> tuple:
-    """Validate and register a new job. Returns (ok, job_or_reason)."""
+    """duration_minutes = 0 means unlimited. Returns (ok, job_or_reason)."""
     try:
         interval_seconds = max(MIN_REPEAT_SEC, int(interval_seconds))
-        duration_minutes = max(1, min(MAX_DURATION_MIN, int(duration_minutes)))
+        duration_minutes = int(duration_minutes)
+        if duration_minutes < 0:
+            duration_minutes = 0
     except Exception as e:
         log_jobs.error(f"create_job: invalid input types: {e}")
         return False, f"Invalid input: {e}"
 
     log_jobs.info(
         f"create_job called owner={owner_id} target={chat_id} "
-        f"interval={interval_seconds}s duration={duration_minutes}m"
+        f"interval={interval_seconds}s duration={duration_minutes}m "
+        f"(0=unlimited)"
     )
 
     if not spend(owner_id, cost_job(), "job_create"):
@@ -87,72 +113,80 @@ def create_job(owner_id: int, chat_id: int, interval_seconds: int,
         "sent": 0,
         "status": "running",
     }
-    _job_meta[job_id] = job
-    log_jobs.info(f"job created id={job_id} owner={owner_id} target={chat_id}")
+    db.create_job_record(job)
+    log_jobs.info(f"job persisted id={job_id}")
     return True, job
 
 
 def register_task(job_id: str, task: asyncio.Task) -> None:
-    _active_jobs[job_id] = task
-    log_jobs.info(f"job task registered id={job_id}")
+    _active_tasks[job_id] = task
+    log_jobs.info(f"task registered id={job_id}")
 
 
 def active_jobs(owner_id: Optional[int] = None) -> List[dict]:
-    items = [j for j in _job_meta.values() if j.get("status") == "running"]
-    if owner_id is not None:
-        items = [j for j in items if int(j.get("owner_id", 0)) == int(owner_id)]
-    return items
+    return db.active_jobs_db(owner_id)
 
 
 def active_count(owner_id: Optional[int] = None) -> int:
     return len(active_jobs(owner_id))
 
 
+def stop_job(job_id: str) -> bool:
+    """Stop a single job by ID."""
+    job = db.get_job(job_id)
+    if not job:
+        return False
+    if job.get("status") != "running":
+        return False
+    task = _active_tasks.pop(job_id, None)
+    if task and not task.done():
+        task.cancel()
+    db.update_job(job_id, status="stopped", finished_at=_now_iso())
+    db.add_history(job_id, job["owner_id"], job["chat_id"],
+                   job.get("text", ""), job.get("sent", 0))
+    log_jobs.info(f"job stopped id={job_id}")
+    return True
+
+
 def stop_all(owner_id: Optional[int] = None) -> int:
     n = 0
-    for jid, task in list(_active_jobs.items()):
-        job = _job_meta.get(jid)
-        if owner_id is not None and job and int(job.get("owner_id", 0)) != int(owner_id):
-            continue
-        try:
-            if not task.done():
-                task.cancel()
-        except Exception:
-            pass
-        if job:
-            job["status"] = "stopped"
-            job["finished_at"] = _now_iso()
-            _append_history(job)
-        _active_jobs.pop(jid, None)
-        n += 1
+    for job in db.active_jobs_db(owner_id):
+        if stop_job(job["id"]):
+            n += 1
     return n
 
 
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
 async def run_job(bot_client, job: dict) -> None:
-    """The actual sender loop. Wrapped in try/except so it never silently dies."""
+    """Sender loop. duration==0 → unlimited. Stops only on /stop or error."""
     job_id = job.get("id", "?")
     owner_id = job.get("owner_id")
     target_id = job.get("chat_id")
-    interval = job.get("interval", 60)
-    duration = job.get("duration", 1)
+    interval = int(job.get("interval", 60))
+    duration = int(job.get("duration", 0))
 
     log_jobs.info(
         f"run_job START id={job_id} owner={owner_id} "
-        f"target={target_id} interval={interval}s duration={duration}m"
+        f"target={target_id} interval={interval}s "
+        f"duration={duration}m {'(unlimited)' if duration == 0 else ''}"
     )
 
-    start = datetime.now(dt_timezone.utc)
-    deadline = start + timedelta(minutes=duration)
+    deadline = None
+    if duration > 0:
+        deadline = datetime.now(dt_timezone.utc) + timedelta(minutes=duration)
+
+    sent = int(job.get("sent", 0))
 
     try:
-        while datetime.now(dt_timezone.utc) < deadline:
-            if job["sent"] >= MAX_MESSAGES:
-                job["status"] = "max_messages"
-                log_jobs.info(f"job {job_id}: reached MAX_MESSAGES")
+        while True:
+            if deadline is not None and datetime.now(dt_timezone.utc) >= deadline:
+                log_jobs.info(f"job {job_id}: reached deadline")
                 break
 
-            rendered = render_variables(job["text"], job, job["sent"] + 1)
-            log_jobs.info(f"job {job_id}: sending to {target_id} (attempt {job['sent']+1})")
+            rendered = render_variables(job["text"], job, sent + 1)
+            log_jobs.info(f"job {job_id}: sending (attempt {sent+1})")
 
             sent_ok = False
             last_err = None
@@ -163,39 +197,44 @@ async def run_job(bot_client, job: dict) -> None:
                     break
                 except Exception as e:
                     last_err = e
-                    log_jobs.warning(f"job {job_id}: send attempt {attempt+1} failed: {type(e).__name__}: {e}")
+                    log_jobs.warning(
+                        f"job {job_id}: send attempt {attempt+1} failed: "
+                        f"{type(e).__name__}: {e}"
+                    )
                     await asyncio.sleep(2)
 
             if not sent_ok:
                 log_jobs.error(f"job {job_id}: giving up after 3 attempts: {last_err}")
-                job["status"] = "send_failed"
-                job["error"] = str(last_err)
-                break
+                db.update_job(job_id, status="send_failed",
+                              error=str(last_err), finished_at=_now_iso())
+                return
 
-            job["sent"] += 1
-            log_jobs.info(f"job {job_id}: sent {job['sent']} messages so far")
+            sent += 1
+            db.update_job(job_id, sent=sent)
+            log_jobs.info(f"job {job_id}: sent {sent} messages so far")
 
             # Per-message diamond cost
             if not spend(owner_id, cost_job_message(), "job_message"):
                 log_jobs.warning(f"job {job_id}: insufficient diamonds for owner {owner_id}")
-                job["status"] = "insufficient"
-                break
+                db.update_job(job_id, status="insufficient",
+                              finished_at=_now_iso())
+                return
 
             await asyncio.sleep(interval)
-        else:
-            job["status"] = "completed"
-            log_jobs.info(f"job {job_id}: completed by deadline")
+
+        db.update_job(job_id, status="completed", finished_at=_now_iso())
 
     except asyncio.CancelledError:
-        job["status"] = "stopped"
         log_jobs.info(f"job {job_id}: cancelled")
+        db.update_job(job_id, status="stopped", finished_at=_now_iso())
         raise
     except Exception as e:
-        job["status"] = "error"
-        job["error"] = str(e)
-        log_jobs.error(f"job {job_id}: crashed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        log_jobs.error(
+            f"job {job_id}: crashed: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+        )
+        db.update_job(job_id, status="error", error=str(e),
+                      finished_at=_now_iso())
     finally:
-        job["finished_at"] = _now_iso()
-        _append_history(job)
-        _active_jobs.pop(job_id, None)
-        log_jobs.info(f"run_job END id={job_id} status={job.get('status')}")
+        _active_tasks.pop(job_id, None)
+        db.add_history(job_id, owner_id, target_id, job.get("text", ""), sent)
+        log_jobs.info(f"run_job END id={job_id} sent={sent}")
