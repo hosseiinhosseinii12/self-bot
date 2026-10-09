@@ -1,9 +1,11 @@
 """Telegram bot runtime: bot + user clients, all handlers, watchdog.
 
 Login flow uses state["step"] = "idle" | "phone" | "code" | "2fa"
-and stores phone + hash in state (matching the old reference implementation).
+and stores phone + hash in state.
 
-QR login uses Telethon's native client.qr_login() with fallback.
+Phone step tries ResendCodeRequest as a non-fatal attempt to force SMS
+delivery (Telegram may or may not honor it). QR login uses Telethon's
+native client.qr_login().
 """
 import asyncio
 import io
@@ -33,7 +35,7 @@ from . import shop as SHOP
 from . import qr_login as QRL
 
 try:
-    from telethon import Button, TelegramClient, events
+    from telethon import Button, TelegramClient, events, functions
     from telethon.errors import (
         FloodWaitError, MessageNotModifiedError, QueryIdInvalidError,
         SessionPasswordNeededError, PhoneCodeInvalidError,
@@ -61,17 +63,14 @@ class BotRuntime:
         self.watchdog_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-        # Login / interaction state
         self._state: dict = {
-            "step": "idle",          # idle | phone | code | 2fa
+            "step": "idle",
             "phone": None,
             "hash": None,
-            "awaiting": {},          # generic "next message" flags
+            "awaiting": {},
             "pending_targets": {},
             "peer_request_open": False,
         }
-
-        # QR login state
         self._qr_client = None
         self._qr_token_hex: Optional[str] = None
         self._qr_expires_at: float = 0.0
@@ -201,7 +200,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             return
         await event.respond(P.main_panel_text(), buttons=P.main_panel_buttons())
 
-    # --- pairing (only if owner not set) ----------------------------------
+    # --- pairing ----------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^\d{6}$"))
     @_guarded(rt)
     async def _pairing(event):
@@ -443,7 +442,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         step = state.get("step") or "idle"
         awaiting = state.get("awaiting") or {}
 
-        # --- QR 2FA (highest priority) ---
+        # --- QR 2FA ---
         if awaiting.get("qr_2fa_password"):
             awaiting.pop("qr_2fa_password", None)
             persist()
@@ -459,7 +458,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
-        # --- LOGIN FLOW ---
+        # --- LOGIN: phone step ---
         if step == "phone":
             phone = re.sub(r"[^\d+]", "", text)
             if not phone:
@@ -469,12 +468,40 @@ def _register_handlers(rt: BotRuntime) -> None:
                 if rt.user_client is None:
                     from .bootstrap import make_user_client_for_login
                     rt.user_client = await make_user_client_for_login()
+
+                # Step 1: initial code request
                 sent = await rt.user_client.send_code_request(phone)
+                phone_code_hash = sent.phone_code_hash
+                log_bot.info(
+                    f"send_code_request OK for {phone} "
+                    f"(type={type(sent).__name__}, hash={phone_code_hash[:8]}…)"
+                )
+
+                # Step 2: try ResendCodeRequest to force SMS routing.
+                # Non-fatal — if it fails, we still have the app code.
+                try:
+                    sms_result = await rt.user_client(functions.auth.ResendCodeRequest(
+                        phone_number=phone,
+                        phone_code_hash=phone_code_hash,
+                    ))
+                    phone_code_hash = sms_result.phone_code_hash
+                    log_bot.info(f"ResendCodeRequest OK for {phone}")
+                except Exception as resend_err:
+                    log_bot.warning(
+                        f"ResendCodeRequest failed (non-fatal): "
+                        f"{type(resend_err).__name__}: {resend_err}"
+                    )
+
                 state["step"] = "code"
                 state["phone"] = phone
-                state["hash"] = sent.phone_code_hash
+                state["hash"] = phone_code_hash
                 persist()
-                await event.respond("📨 Code sent. Send it with dashes/spaces, e.g. `1-2-3-4-5`.")
+                await event.respond(
+                    "📨 Code sent.\n\n"
+                    "Check **Telegram app** → chat with **Telegram** (blue checkmark).\n"
+                    "If not there, check SMS.\n\n"
+                    "Send the code with dashes, e.g. `1-2-3-4-5`."
+                )
             except PhoneNumberInvalidError:
                 await event.respond("Invalid phone number.")
             except FloodWaitError as e:
@@ -491,6 +518,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ Error: `{type(e).__name__}`")
             return
 
+        # --- LOGIN: code step ---
         if step == "code":
             code = re.sub(r"\D", "", text)
             await _tidy(event)
@@ -523,6 +551,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             await _finish_login(rt, event, state, persist)
             return
 
+        # --- LOGIN: 2FA step ---
         if step == "2fa":
             await _tidy(event)
             try:
@@ -642,7 +671,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             except Exception:
                 pass
 
-    # navigation
     if data == "nav:main":
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
     if data == "nav:status":
@@ -660,7 +688,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "nav:help":
         await edit(P.help_text(), P.help_buttons()); return
 
-    # clock on/off
     if data == "clock:on":
         if not rt.user_client:
             await _safe_answer(event, "No user session.", alert=True); return
@@ -674,7 +701,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await CLK.stop_clock(rt.user_client)
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
 
-    # settings
     if data == "set:interval":
         rt.awaiting["interval"] = True; rt.save_state()
         await edit("Send interval (1–60):", [[Button.inline(P.t("btn_back"), b"nav:settings")]]); return
@@ -689,7 +715,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         save_config(CONFIG)
         await edit(P.language_text(), P.language_buttons()); return
 
-    # appearance
     if data == "app:base":
         rt.awaiting["base_name"] = True; rt.save_state()
         await edit("Send new base name:", [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
@@ -720,7 +745,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit("Send 10 characters for 0–9:",
                    [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
 
-    # jobs
     if data == "job:new":
         await edit("Use `.rep <seconds> <minutes> <text>` in this DM.",
                    [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
@@ -741,7 +765,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         tpl = J.load_template(rt.owner_id, name) or ""
         await edit(f"**{name}**\n\n{tpl}", [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
 
-    # account
     if data == "acc:reqdiamonds":
         rt.awaiting["reqdiamonds"] = True; rt.save_state()
         await edit("Send the amount of diamonds (1–10000):",
@@ -772,11 +795,9 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         U.set_notify(rt.owner_id, key, new_val)
         await edit(P.notify_text(), P.notify_buttons()); return
 
-    # QR login
     if data == "acc:qrlogin":
         await _handle_qr_login(rt, event); return
 
-    # memory
     if data == "mem:view":
         from .store import memory_store
         txt = "```\n" + (str(memory_store.all())[:3500]) + "\n```"
@@ -801,29 +822,25 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
 
 
 # ===========================================================================
-# QR login (robust)
+# QR login (uses only client.qr_login())
 # ===========================================================================
 async def _handle_qr_login(rt: BotRuntime, event) -> None:
-    """Start QR login and send the QR image to the owner. Reports diagnostics."""
     bot = rt.bot_client
 
-    # Diagnostics — surface which dependency is broken
     try:
         from .qr_login import diagnose
         d = diagnose()
         if not d["telethon"]:
-            msg = f"❌ QR Login unavailable.\nTelethon error: `{d['telethon_error']}`"
-            try:
-                await bot.send_message(event.chat_id, msg)
-            except Exception:
-                pass
+            await bot.send_message(
+                event.chat_id,
+                f"❌ QR Login unavailable.\nTelethon error: `{d['telethon_error']}`"
+            )
             return
         if not d["qrcode"]:
-            msg = f"❌ QR Login unavailable.\nqrcode error: `{d['qrcode_error']}`"
-            try:
-                await bot.send_message(event.chat_id, msg)
-            except Exception:
-                pass
+            await bot.send_message(
+                event.chat_id,
+                f"❌ QR Login unavailable.\nqrcode error: `{d['qrcode_error']}`"
+            )
             return
     except Exception as e:
         log_bot.error(f"qr diagnose failed: {type(e).__name__}: {e}")

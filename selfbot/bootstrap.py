@@ -116,12 +116,30 @@ async def _make_user_client(runtime):
 
 
 async def make_user_client_for_login():
-    """Used by bot_handlers._do_login to build a proxy-aware client."""
+    """Build a proxy-aware user client for login / QR login.
+
+    Uses an explicit mobile device profile (Pixel 5 / Android 11) because
+    Telegram treats requests from 'mobile devices' more favorably when
+    delivering login codes.
+    """
     api_id, api_hash = get_api_credentials()
     session_path = str(DB_PATH / "user.session")
     proxy_tuple = _build_telethon_proxy()
-    client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_tuple)
+    log_bot.info(f"make_user_client_for_login: proxy={proxy_tuple}")
+
+    client = TelegramClient(
+        session_path,
+        api_id,
+        api_hash,
+        proxy=proxy_tuple,
+        device_model="Pixel 5",
+        system_version="11",
+        app_version="8.4.1",
+        lang_code="en",
+        system_lang_code="en-US",
+    )
     await client.connect()
+    log_bot.info("make_user_client_for_login: connected (mobile device profile)")
     return client
 
 
