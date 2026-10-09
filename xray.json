@@ -1,0 +1,61 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 1080,
+      "listen": "127.0.0.1",
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true,
+        "ip": "127.0.0.1"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls"]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev",
+            "port": 443,
+            "users": [
+              {
+                "id": "acb8ddca-b6b2-4821-8db1-34b18bb31d63",
+                "encryption": "none",
+                "flow": ""
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev",
+          "fingerprint": "chrome",
+          "allowInsecure": false,
+          "alpn": ["http/1.1"]
+        },
+        "wsSettings": {
+          "path": "/vl/nTTZbCCwhkKVQ75evMl3biwR1h4lbdoF?ed=2560",
+          "headers": {
+            "Host": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev"
+          }
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}

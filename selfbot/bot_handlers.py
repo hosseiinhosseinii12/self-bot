@@ -700,19 +700,22 @@ async def _handle_qr_login(rt: BotRuntime, event) -> None:
 
 
 # ===========================================================================
-# Login flow (phone + code)
+# Login flow (phone + code) — proxy-aware
 # ===========================================================================
 async def _do_login(rt: BotRuntime, event) -> None:
     phone = rt._pending_targets.get("phone")
     code = rt._pending_targets.get("code")
     password = rt._pending_targets.get("password")
 
-    session_path = str(DB_PATH / "user.session")
-    api_id, api_hash = get_api_credentials()
-
+    # Build a proxy-aware client (Xray SOCKS5 on 127.0.0.1:1080)
     if rt.user_client is None:
-        rt.user_client = TelegramClient(session_path, api_id, api_hash)
-        await rt.user_client.connect()
+        try:
+            from .bootstrap import make_user_client_for_login
+            rt.user_client = await make_user_client_for_login()
+        except Exception as e:
+            log_bot.error(f"could not create user client: {e}")
+            await event.respond(f"Login failed: {e}")
+            return
 
     try:
         if phone and not code:

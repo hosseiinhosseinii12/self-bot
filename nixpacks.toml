@@ -1,8 +1,1 @@
-[phases.setup]
-nixPkgs = ["python311", "gcc"]
-
-[phases.install]
-cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
-
-[start]
-cmd = "gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 app:flask_app"
+# nixpacks.toml — unused, project uses Dockerfile via railway.toml

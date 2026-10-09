@@ -90,13 +90,16 @@ async def start_qr_login(runtime) -> tuple:
 
     api_id, api_hash = get_api_credentials()
 
-    # Use existing user_client or create a fresh one
+    # Use existing user_client or create a fresh (proxy-aware) one
     client = runtime.user_client
     fresh = False
     if client is None:
-        session_path = str(DB_PATH / "user.session")
-        client = TelegramClient(session_path, api_id, api_hash)
-        await client.connect()
+        try:
+            from .bootstrap import make_user_client_for_login
+            client = await make_user_client_for_login()
+        except Exception as e:
+            log_bot.error(f"could not create user client for QR: {e}")
+            return False, f"Failed to create client: {e}", b"", 0
         fresh = True
 
     try:
@@ -146,7 +149,6 @@ async def start_qr_login(runtime) -> tuple:
                 pass
         return False, "Unexpected response from Telegram.", b"", 0
 
-    # Build the tg:// login URL
     token_b64 = base64.urlsafe_b64encode(result.token).rstrip(b"=").decode()
     url = f"tg://login?token={token_b64}"
     expires_at = float(result.expires)

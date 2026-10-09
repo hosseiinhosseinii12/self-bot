@@ -1,7 +1,13 @@
-"""Boot and shutdown orchestration for the whole app."""
+"""Boot and shutdown orchestration for the whole app.
+
+Xray runs as a separate process (started by Dockerfile CMD) and exposes a
+local SOCKS5 proxy on 127.0.0.1:1080 which tunnels through the VLESS config
+to Cloudflare Workers. Telethon connects through that SOCKS5 proxy directly.
+"""
 import asyncio
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .config import CONFIG, DB_PATH, android_fallback, get_api_credentials, save_config
 from .logging_setup import log, log_bot, log_clock
@@ -15,6 +21,41 @@ try:
     from telethon.errors import ApiIdPublishedFloodError
 except ImportError:
     TelegramClient = None  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Proxy helper
+# ---------------------------------------------------------------------------
+def _build_telethon_proxy():
+    """Return (scheme_id, host, port) tuple for Telethon, or None."""
+    if not CONFIG.get("use_proxy"):
+        return None
+    proxy_url = CONFIG.get("proxy_url") or ""
+    if not proxy_url:
+        return None
+    try:
+        import socks  # PySocks
+    except ImportError:
+        log_bot.warning("PySocks not installed — proceeding without proxy")
+        return None
+
+    try:
+        u = urlparse(proxy_url)
+        scheme = (u.scheme or "socks5").lower()
+        host = u.hostname or "127.0.0.1"
+        port = int(u.port or 1080)
+    except Exception as e:
+        log_bot.warning(f"could not parse proxy URL {proxy_url!r}: {e}")
+        return None
+
+    if scheme == "socks5":
+        return (socks.SOCKS5, host, port)
+    if scheme == "socks4":
+        return (socks.SOCKS4, host, port)
+    if scheme in ("http", "https"):
+        return (socks.HTTP, host, port)
+    log_bot.warning(f"unknown proxy scheme {scheme!r}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -39,14 +80,18 @@ async def _make_bot_client(runtime):
         raise RuntimeError("BOT_TOKEN not set.")
 
     session_path = str(DB_PATH / "bot.session")
+    proxy_tuple = _build_telethon_proxy()
+    if proxy_tuple:
+        log_bot.info(f"Telethon using proxy {proxy_tuple}")
+
     try:
-        client = TelegramClient(session_path, api_id, api_hash)
+        client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_tuple)
         await client.start(bot_token=bot_token)
         return client
     except ApiIdPublishedFloodError:
         log_bot.warning("API_ID_PUBLISHED_FLOOD — retrying with Android public creds")
         aid, ahash = android_fallback()
-        client = TelegramClient(session_path, aid, ahash)
+        client = TelegramClient(session_path, aid, ahash, proxy=proxy_tuple)
         await client.start(bot_token=bot_token)
         return client
 
@@ -56,8 +101,11 @@ async def _make_user_client(runtime):
     session_path = str(DB_PATH / "user.session")
     if not Path(session_path).exists():
         return None
+
+    proxy_tuple = _build_telethon_proxy()
+
     try:
-        client = TelegramClient(session_path, api_id, api_hash)
+        client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_tuple)
         await client.connect()
         if not await client.is_user_authorized():
             return None
@@ -67,6 +115,16 @@ async def _make_user_client(runtime):
         return None
 
 
+async def make_user_client_for_login():
+    """Used by bot_handlers._do_login to build a proxy-aware client."""
+    api_id, api_hash = get_api_credentials()
+    session_path = str(DB_PATH / "user.session")
+    proxy_tuple = _build_telethon_proxy()
+    client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_tuple)
+    await client.connect()
+    return client
+
+
 # ---------------------------------------------------------------------------
 # Boot
 # ---------------------------------------------------------------------------
@@ -74,7 +132,6 @@ _async_loop = None
 
 
 def boot_all(runtime) -> None:
-    """Boot everything in a dedicated event loop (runs in a background thread)."""
     global _async_loop
     loop = asyncio.new_event_loop()
     _async_loop = loop
@@ -90,24 +147,27 @@ def boot_all(runtime) -> None:
 async def _boot_async(runtime) -> None:
     log.info("=== SELF BOT booting ===")
 
-    # 1) Embedded SOCKS5 bridge
+    # 1) Verify Xray's SOCKS5 proxy is reachable
     try:
-        from .proxy import SocksToWorkerBridge, test_proxy, get_proxy_url
-        if get_proxy_url():
-            bridge = SocksToWorkerBridge()
-            await bridge.start()
-            runtime._bridge = bridge
-
-            def _probe():
+        proxy_tuple = _build_telethon_proxy()
+        if proxy_tuple:
+            _, host, port = proxy_tuple
+            try:
+                r, w = await asyncio.wait_for(
+                    asyncio.open_connection(host=host, port=port), timeout=5.0
+                )
+                w.close()
                 try:
-                    res = test_proxy()
-                    log.info(f"proxy probe: {res}")
-                except Exception as e:
-                    log.warning(f"proxy probe failed: {e}")
-
-            threading.Thread(target=_probe, daemon=True, name="proxy-probe").start()
+                    await w.wait_closed()
+                except Exception:
+                    pass
+                log.info(f"Xray SOCKS5 proxy reachable at {host}:{port}")
+            except Exception as e:
+                log.warning(f"Xray SOCKS5 proxy NOT reachable at {host}:{port}: {e}")
+        else:
+            log.info("proxy disabled — connecting directly")
     except Exception as e:
-        log.warning(f"SOCKS bridge failed to start: {e}")
+        log.warning(f"proxy check failed: {e}")
 
     # 2) Seed owner
     log.info("seeding owner…")
@@ -122,6 +182,13 @@ async def _boot_async(runtime) -> None:
     except Exception as e:
         log_bot.error(f"bot client failed: {e}")
         return
+
+    # 3b) Pairing code (only meaningful until owner pairs)
+    code = getattr(runtime, "pairing_code", "------")
+    log.info("╔════════════════════════════════════════════╗")
+    log.info(f"║  PAIRING CODE:  {code}                    ║")
+    log.info("║  Send this to your bot to become owner.    ║")
+    log.info("╚════════════════════════════════════════════╝")
 
     # 4) User client (if session exists)
     runtime.user_client = await _make_user_client(runtime)
@@ -210,11 +277,6 @@ async def _shutdown_async(runtime) -> None:
             await shutdown_clock(runtime.user_client)
     except Exception as e:
         log_clock.warning(f"shutdown strip failed: {e}")
-    try:
-        if getattr(runtime, "_bridge", None):
-            await runtime._bridge.stop()
-    except Exception:
-        pass
     try:
         if getattr(runtime, "_scheduler", None):
             runtime._scheduler.shutdown(wait=False)
