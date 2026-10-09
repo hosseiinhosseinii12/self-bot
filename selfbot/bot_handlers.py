@@ -3,9 +3,10 @@
 Login flow uses state["step"] = "idle" | "phone" | "code" | "2fa"
 and stores phone + hash in state.
 
-Phone step tries ResendCodeRequest ONCE per session as a non-fatal attempt
-to force SMS. Handles SendCodeUnavailableError gracefully.
+Phone step tries ResendCodeRequest ONCE per session (non-fatal).
 QR login uses Telethon's native client.qr_login().
+Job creation flow is a graphical step-by-step panel with reply-keyboard
+group selection.
 """
 import asyncio
 import io
@@ -71,6 +72,7 @@ class BotRuntime:
             "pending_targets": {},
             "peer_request_open": False,
             "_resend_tried": False,
+            "job_draft": {},
         }
         self._qr_client = None
         self._qr_token_hex: Optional[str] = None
@@ -94,6 +96,7 @@ class BotRuntime:
             "pending_targets": self._state.get("pending_targets") or {},
             "peer_request_open": self._state.get("peer_request_open", False),
             "_resend_tried": self._state.get("_resend_tried", False),
+            "job_draft": self._state.get("job_draft") or {},
         })
 
     def load_state(self) -> None:
@@ -105,6 +108,7 @@ class BotRuntime:
         self._state["pending_targets"] = st.get("pending_targets") or {}
         self._state["peer_request_open"] = bool(st.get("peer_request_open", False))
         self._state["_resend_tried"] = bool(st.get("_resend_tried", False))
+        self._state["job_draft"] = st.get("job_draft") or {}
 
 
 # ===========================================================================
@@ -256,6 +260,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         state["hash"] = None
         state["awaiting"] = {}
         state["_resend_tried"] = False
+        state["job_draft"] = {}
         rt._qr_needs_2fa = False
         persist()
         await event.respond("Logged out and session deleted.")
@@ -421,6 +426,49 @@ def _register_handlers(rt: BotRuntime) -> None:
         n = J.stop_jobs_in_chat(event.chat_id)
         await event.respond(f"{P.t('job_stopped')} ({n})")
 
+    # --- raw peer-selection handler ---------------------------------------
+    @bot.on(events.Raw)
+    async def _raw_peer_selection(update):
+        try:
+            msg = getattr(update, "message", None)
+            if msg is None:
+                return
+            action = getattr(msg, "action", None)
+            if action is None:
+                return
+            peers = getattr(action, "peers", None)
+            if not peers:
+                return
+            peer = peers[0]
+            chat_id = (
+                getattr(peer, "chat_id", None)
+                or getattr(peer, "channel_id", None)
+            )
+            if chat_id is None:
+                return
+
+            draft = state.setdefault("job_draft", {})
+            draft["target"] = chat_id
+            rt.save_state()
+
+            try:
+                await bot.send_message(
+                    rt.owner_id,
+                    "Keyboard closed.",
+                    buttons=Button.clear(),
+                )
+            except Exception:
+                pass
+
+            await bot.send_message(
+                rt.owner_id,
+                f"✅ Group selected: `{chat_id}`\n\nNow choose the interval.",
+                buttons=P.job_setup_buttons(),
+                parse_mode="md",
+            )
+        except Exception as e:
+            log_bot.error(f"peer selection handler error: {e}")
+
     # --- callbacks --------------------------------------------------------
     @bot.on(events.CallbackQuery())
     @_guarded(rt)
@@ -463,6 +511,81 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
+        # --- JOB DRAFT: interval custom ---
+        if awaiting.get("job_interval_custom"):
+            awaiting.pop("job_interval_custom", None)
+            persist()
+            try:
+                n = int(text)
+                if n < 60:
+                    await event.respond("Min 60 seconds.")
+                    return
+                draft = state.setdefault("job_draft", {})
+                draft["interval"] = n
+                rt.save_state()
+                await event.respond(
+                    P.job_duration_text(n),
+                    buttons=P.job_duration_buttons(n),
+                    parse_mode="md",
+                )
+            except Exception:
+                await event.respond("Invalid number.")
+            return
+
+        # --- JOB DRAFT: duration custom ---
+        if awaiting.get("job_duration_custom"):
+            awaiting.pop("job_duration_custom", None)
+            persist()
+            try:
+                n = int(text)
+                if n < 1:
+                    await event.respond("Min 1 minute.")
+                    return
+                draft = state.setdefault("job_draft", {})
+                draft["duration"] = n
+                rt.save_state()
+                await event.respond(
+                    P.job_text_prompt(),
+                    buttons=P.job_text_buttons(),
+                    parse_mode="md",
+                )
+            except Exception:
+                await event.respond("Invalid number.")
+            return
+
+        # --- JOB DRAFT: message text ---
+        if awaiting.get("job_text"):
+            awaiting.pop("job_text", None)
+            persist()
+            draft = state.setdefault("job_draft", {})
+            draft["text"] = text
+            rt.save_state()
+            await event.respond(
+                P.job_confirm_text(draft),
+                buttons=P.job_confirm_buttons(draft),
+                parse_mode="md",
+            )
+            return
+
+        # --- JOB DRAFT: .txt file ---
+        if awaiting.get("job_text_file") and event.document:
+            awaiting.pop("job_text_file", None)
+            persist()
+            try:
+                data_bytes = await event.download_media(bytes)
+                file_text = data_bytes.decode("utf-8", errors="ignore")[:4000]
+                draft = state.setdefault("job_draft", {})
+                draft["text"] = file_text
+                rt.save_state()
+                await event.respond(
+                    P.job_confirm_text(draft),
+                    buttons=P.job_confirm_buttons(draft),
+                    parse_mode="md",
+                )
+            except Exception as e:
+                await event.respond(f"❌ Could not read file: {e}")
+            return
+
         # --- LOGIN: phone step ---
         if step == "phone":
             phone = re.sub(r"[^\d+]", "", text)
@@ -474,7 +597,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                     from .bootstrap import make_user_client_for_login
                     rt.user_client = await make_user_client_for_login()
 
-                # Step 1: initial code request
                 sent = await rt.user_client.send_code_request(phone)
                 phone_code_hash = sent.phone_code_hash
                 log_bot.info(
@@ -482,8 +604,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                     f"(type={type(sent).__name__})"
                 )
 
-                # Step 2: try ResendCodeRequest ONCE per session only.
-                # If SendCodeUnavailableError, we just stop and use app code.
                 if not state.get("_resend_tried"):
                     state["_resend_tried"] = True
                     try:
@@ -497,8 +617,8 @@ def _register_handlers(rt: BotRuntime) -> None:
                         err_name = type(resend_err).__name__
                         if "SendCodeUnavailable" in err_name:
                             log_bot.info(
-                                f"SendCodeUnavailable — all delivery options exhausted, "
-                                f"using app code only"
+                                "SendCodeUnavailable — all delivery options exhausted, "
+                                "using app code only"
                             )
                         else:
                             log_bot.warning(
@@ -584,7 +704,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             await _finish_login(rt, event, state, persist)
             return
 
-        # --- AWAITING FLOW ---
+        # --- AWAITING: interval ---
         if awaiting.get("interval"):
             awaiting.pop("interval", None); persist()
             try:
@@ -599,6 +719,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Invalid number.")
             return
 
+        # --- AWAITING: timezone ---
         if awaiting.get("timezone"):
             awaiting.pop("timezone", None); persist()
             try:
@@ -611,6 +732,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Invalid timezone.")
             return
 
+        # --- AWAITING: base name ---
         if awaiting.get("base_name"):
             awaiting.pop("base_name", None); persist()
             CONFIG["base_name"] = text
@@ -618,6 +740,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             await event.respond("Base name updated.")
             return
 
+        # --- AWAITING: custom name font ---
         if awaiting.get("custom_name_font"):
             awaiting.pop("custom_name_font", None); persist()
             if len(text) < 26:
@@ -628,6 +751,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Custom name font saved.")
             return
 
+        # --- AWAITING: custom clock font ---
         if awaiting.get("custom_clock_font"):
             awaiting.pop("custom_clock_font", None); persist()
             if len(text) < 10:
@@ -638,6 +762,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Custom clock font saved.")
             return
 
+        # --- AWAITING: request diamonds ---
         if awaiting.get("reqdiamonds"):
             awaiting.pop("reqdiamonds", None); persist()
             try:
@@ -687,7 +812,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             except Exception:
                 pass
 
-    # navigation
+    # ---- navigation ----
     if data == "nav:main":
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
     if data == "nav:status":
@@ -705,7 +830,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "nav:help":
         await edit(P.help_text(), P.help_buttons()); return
 
-    # clock on/off
+    # ---- clock on/off ----
     if data == "clock:on":
         if not rt.user_client:
             await _safe_answer(event, "No user session.", alert=True); return
@@ -719,7 +844,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await CLK.stop_clock(rt.user_client)
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
 
-    # settings
+    # ---- settings ----
     if data == "set:interval":
         rt.awaiting["interval"] = True; rt.save_state()
         await edit("Send interval (1–60):", [[Button.inline(P.t("btn_back"), b"nav:settings")]]); return
@@ -734,7 +859,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         save_config(CONFIG)
         await edit(P.language_text(), P.language_buttons()); return
 
-    # appearance
+    # ---- appearance ----
     if data == "app:base":
         rt.awaiting["base_name"] = True; rt.save_state()
         await edit("Send new base name:", [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
@@ -765,10 +890,127 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit("Send 10 characters for 0–9:",
                    [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
 
-    # jobs
+    # ---- job creation: graphical flow ----
     if data == "job:new":
-        await edit("Use `.rep <seconds> <minutes> <text>` in this DM.",
-                   [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
+        rt._state["job_draft"] = {}
+        rt._state["awaiting"] = {}
+        rt.save_state()
+        await edit(P.job_setup_text(), P.job_setup_buttons())
+        return
+
+    if data.startswith("job:interval:"):
+        val = data.split(":")[2]
+        if val == "custom":
+            rt.awaiting["job_interval_custom"] = True
+            rt.save_state()
+            await edit(
+                "**Step 1/3 — Custom interval**\n\n"
+                "Send a number (seconds, min 60):",
+                [[Button.inline("◀️ Back", b"job:setup:back")]],
+            )
+            return
+        try:
+            interval = int(val)
+        except ValueError:
+            return
+        draft = rt._state.setdefault("job_draft", {})
+        draft["interval"] = interval
+        rt.save_state()
+        await edit(P.job_duration_text(interval), P.job_duration_buttons(interval))
+        return
+
+    if data.startswith("job:duration:"):
+        val = data.split(":")[2]
+        if val == "custom":
+            rt.awaiting["job_duration_custom"] = True
+            rt.save_state()
+            await edit(
+                "**Step 2/3 — Custom duration**\n\n"
+                "Send a number (minutes):",
+                [[Button.inline("◀️ Back", b"job:setup:back")]],
+            )
+            return
+        try:
+            duration = int(val)
+        except ValueError:
+            return
+        draft = rt._state.setdefault("job_draft", {})
+        draft["duration"] = duration
+        rt.save_state()
+        await edit(P.job_text_prompt(), P.job_text_buttons())
+        return
+
+    if data == "job:text:enter":
+        rt.awaiting["job_text"] = True
+        rt.save_state()
+        await edit(
+            "Send the message text now:",
+            [[Button.inline("◀️ Back", b"job:setup:back")]],
+        )
+        return
+
+    if data == "job:text:upload":
+        rt.awaiting["job_text_file"] = True
+        rt.save_state()
+        await edit(
+            "Send a `.txt` file with the message:",
+            [[Button.inline("◀️ Back", b"job:setup:back")]],
+        )
+        return
+
+    if data == "job:confirm:start":
+        draft = rt._state.get("job_draft", {})
+        interval = draft.get("interval", 0)
+        duration = draft.get("duration", 0)
+        text = draft.get("text", "")
+        target = draft.get("target")
+        if not target:
+            await edit("❌ No target selected.",
+                       [[Button.inline("◀️ Back", b"job:setup:back")]])
+            return
+        ok, res = J.create_job(rt.owner_id, target, interval, duration, text)
+        if ok:
+            job = res
+            task = asyncio.create_task(J.run_job(rt.bot_client, job))
+            J.register_task(job["id"], task)
+            rt._state["job_draft"] = {}
+            rt.save_state()
+            await edit(
+                f"✅ Job `{job['id']}` started.\n"
+                f"Every {interval}s for {duration} min.",
+                [[Button.inline("📋 Jobs", b"nav:jobs")]],
+            )
+        else:
+            await edit(f"❌ {res}", [[Button.inline("◀️ Back", b"job:setup:back")]])
+        return
+
+    if data == "job:setup:back":
+        rt._state["job_draft"] = {}
+        for k in ("job_interval_custom", "job_duration_custom",
+                  "job_text", "job_text_file"):
+            rt.awaiting.pop(k, None)
+        rt.save_state()
+        await edit(P.job_setup_text(), P.job_setup_buttons())
+        return
+
+    if data == "job:pick_target":
+        from .panels import group_selection_reply_buttons, group_selection_text
+        kb = group_selection_reply_buttons()
+        if kb is None:
+            await edit(
+                "❌ Peer selection unavailable.\n"
+                "Your Telethon version is too old.",
+                [[Button.inline("◀️ Back", b"nav:jobs")]],
+            )
+            return
+        await bot.send_message(
+            event.chat_id,
+            group_selection_text(),
+            buttons=kb,
+        )
+        return
+
+    # ---- jobs list / stop / templates ----
     if data == "job:list":
         await edit(P.jobs_text(), P.jobs_buttons()); return
     if data == "job:stopall":
@@ -786,7 +1028,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         tpl = J.load_template(rt.owner_id, name) or ""
         await edit(f"**{name}**\n\n{tpl}", [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
 
-    # account
+    # ---- account ----
     if data == "acc:reqdiamonds":
         rt.awaiting["reqdiamonds"] = True; rt.save_state()
         await edit("Send the amount of diamonds (1–10000):",
@@ -817,11 +1059,11 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         U.set_notify(rt.owner_id, key, new_val)
         await edit(P.notify_text(), P.notify_buttons()); return
 
-    # QR login
+    # ---- QR login ----
     if data == "acc:qrlogin":
         await _handle_qr_login(rt, event); return
 
-    # memory
+    # ---- memory ----
     if data == "mem:view":
         from .store import memory_store
         txt = "```\n" + (str(memory_store.all())[:3500]) + "\n```"
@@ -837,6 +1079,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         state["awaiting"] = {}
         state["pending_targets"] = {}
         state["_resend_tried"] = False
+        state["job_draft"] = {}
         rt.save_state()
         await edit("State cleared.", [[Button.inline(P.t("btn_back"), b"nav:memory")]]); return
     if data == "mem:dump":
@@ -847,7 +1090,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
 
 
 # ===========================================================================
-# QR login
+# QR login handler
 # ===========================================================================
 async def _handle_qr_login(rt: BotRuntime, event) -> None:
     bot = rt.bot_client
@@ -891,11 +1134,10 @@ async def _handle_qr_login(rt: BotRuntime, event) -> None:
         remaining = max(0, int(expires_at - time.time()))
         caption = (
             "🔐 **QR Code Login**\n\n"
-            "1. Open **Telegram** on your phone (official app, not this bot).\n"
+            "1. Open **Telegram** on your phone (official app).\n"
             "2. Go to **Settings → Devices → Link Desktop Device**.\n"
             "3. Scan this QR code.\n\n"
-            f"⏱ Expires in {remaining} seconds.\n"
-            "If it expires, send /login again."
+            f"⏱ Expires in {remaining} seconds."
         )
         await bot.send_file(
             event.chat_id,
