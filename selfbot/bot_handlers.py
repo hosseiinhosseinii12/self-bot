@@ -1,8 +1,4 @@
-"""Telegram bot runtime — everyone has full access.
-
-Per-user panels, per-user sessions, per-user clocks.
-Target group set via /setgroup <chat_id>.
-"""
+"""Telegram bot runtime — login-first flow, per-user everything."""
 import asyncio
 import io
 import os
@@ -69,6 +65,10 @@ class BotRuntime:
         if isinstance(st, dict):
             self._state = {int(k): v for k, v in st.items() if str(k).isdigit()}
 
+    def is_logged_in(self, user_id: int) -> bool:
+        client = self.user_clients.get(int(user_id))
+        return client is not None
+
 
 def build_bot_runtime() -> BotRuntime:
     rt = BotRuntime()
@@ -134,6 +134,10 @@ def _register_handlers(rt: BotRuntime) -> None:
             U.ensure_user(uid)
         except Exception:
             pass
+        if not rt.is_logged_in(uid):
+            await event.respond(P.login_required_text(),
+                                buttons=P.login_required_buttons())
+            return
         await event.respond(P.main_panel_text(uid), buttons=P.main_panel_buttons())
 
     # ---- /help ----
@@ -151,18 +155,8 @@ def _register_handlers(rt: BotRuntime) -> None:
             U.ensure_user(uid)
         except Exception:
             pass
-        authorized = False
-        try:
-            client = rt.user_clients.get(uid)
-            if client is None:
-                from .bootstrap import make_user_client_for_login
-                client = await make_user_client_for_login(uid)
-                rt.user_clients[uid] = client
-            authorized = await client.is_user_authorized()
-        except Exception:
-            authorized = False
-        if authorized:
-            await event.respond("Already logged in.")
+        if rt.is_logged_in(uid):
+            await event.respond("✅ Already logged in.")
             return
         st = rt.state_for(uid)
         st["step"] = "phone"
@@ -170,7 +164,11 @@ def _register_handlers(rt: BotRuntime) -> None:
         st["hash"] = None
         st["_resend_tried"] = False
         rt.save_state()
-        await event.respond("📱 Send your phone number with country code (e.g. +989121234567).")
+        await event.respond(
+            "**🔐 Login — Step 1/2**\n\n"
+            "📱 Send your phone number with country code.\n\n"
+            "Example: `+989121234567`"
+        )
 
     # ---- /logout ----
     @bot.on(events.NewMessage(pattern=r"^/logout$", incoming=True))
@@ -180,6 +178,8 @@ def _register_handlers(rt: BotRuntime) -> None:
         client = rt.user_clients.get(uid)
         try:
             if client:
+                # stop clock first
+                CLK.stop_clock(uid)
                 await client.log_out()
         except Exception as e:
             log_bot.warning(f"logout error: {e}")
@@ -193,7 +193,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         st["hash"] = None
         st["awaiting"] = {}
         rt.save_state()
-        await event.respond("Logged out and session deleted.")
+        await event.respond("✅ Logged out and session deleted.")
 
     # ---- /setgroup ----
     @bot.on(events.NewMessage(pattern=r"^/setgroup(?:\s+(-?\d+))?$", incoming=True))
@@ -202,18 +202,23 @@ def _register_handlers(rt: BotRuntime) -> None:
         uid = event.sender_id
         arg = event.pattern_match.group(1)
         if not arg:
-            await event.respond(P.group_selection_text(),
-                                buttons=P.group_selection_buttons())
+            kb = P.group_selector_reply_keyboard()
+            if kb:
+                await event.respond(P.group_selector_text(), buttons=kb)
+            else:
+                await event.respond(
+                    "Send the group chat ID: `/setgroup -1001234567890`",
+                    parse_mode="md",
+                )
             return
         try:
             chat_id = int(arg)
         except Exception:
-            await event.respond("Invalid chat ID. It must be a number like `-1001234567890`.")
+            await event.respond("Invalid chat ID.")
             return
         U.update_user_settings(uid, job_target=chat_id)
         await event.respond(
-            f"✅ Target group set to `{chat_id}`.\n\n"
-            f"You can now create jobs with **Jobs → New job**.",
+            f"✅ Target group set to `{chat_id}`.",
             parse_mode="md",
         )
 
@@ -232,55 +237,13 @@ def _register_handlers(rt: BotRuntime) -> None:
         uid = event.sender_id
         if not code:
             stats = REF.stats(uid)
-            await event.respond(f"**Your referral code**\n\n`{stats['code']}`")
+            await event.respond(f"**🤝 Your referral code**\n\n`{stats['code']}`")
             return
         ok, msg = REF.apply_referral(uid, code)
         if ok:
-            await event.respond(f"Referral applied. +{E.referral_bonus()} 💎 to both sides.")
+            await event.respond(f"✅ Referral applied. +{E.referral_bonus()} 💎 to both sides.")
         else:
-            await event.respond("Invalid or already-used referral code.")
-
-    # ---- .rep ----
-    @bot.on(events.NewMessage(pattern=r"^\.rep\s+(\d+)\s+(\d+)\s+(.+)$", incoming=True))
-    @_guarded(rt)
-    async def _rep(event):
-        uid = event.sender_id
-        if event.chat_id != uid:
-            return
-        interval = int(event.pattern_match.group(1))
-        duration = int(event.pattern_match.group(2))
-        text = event.pattern_match.group(3).strip()
-
-        target = U.get_setting(uid, "job_target")
-        if not target:
-            await event.respond(
-                "❌ No target group set. Use `/setgroup <chat_id>` first.",
-                parse_mode="md",
-            )
-            return
-
-        ok, res = J.create_job(uid, target, interval, duration, text)
-        if not ok:
-            if res == "insufficient":
-                bal = E.get_balance(uid)
-                await event.respond(f"❌ Insufficient diamonds. Need {E.cost_job()}, you have {bal}.")
-            else:
-                await event.respond(res)
-            return
-        job = res
-        task = asyncio.create_task(J.run_job(rt.bot_client, job))
-        J.register_task(job["id"], task)
-        await event.respond(f"✅ Job `{job['id']}` started — every {interval}s for {duration} min.")
-
-    # ---- .stop ----
-    @bot.on(events.NewMessage(pattern=r"^\.stop$", incoming=True))
-    @_guarded(rt)
-    async def _stop(event):
-        uid = event.sender_id
-        if event.chat_id != uid:
-            return
-        n = J.stop_all(owner_id=uid)
-        await event.respond(f"Stopped {n} job(s).")
+            await event.respond("❌ Invalid or already-used referral code.")
 
     # ---- callbacks ----
     @bot.on(events.CallbackQuery())
@@ -294,6 +257,46 @@ def _register_handlers(rt: BotRuntime) -> None:
             pass
         except Exception as e:
             log_bot.warning(f"callback error data={data}: {e}")
+
+    # ---- raw peer selection ----
+    @bot.on(events.Raw)
+    async def _raw_peer_selection(update):
+        try:
+            msg = getattr(update, "message", None)
+            if msg is None:
+                return
+            action = getattr(msg, "action", None)
+            if action is None:
+                return
+            peers = getattr(action, "peers", None)
+            if not peers:
+                return
+            peer = peers[0]
+            chat_id = (
+                getattr(peer, "chat_id", None)
+                or getattr(peer, "channel_id", None)
+            )
+            if chat_id is None:
+                return
+            uid = rt.owner_id  # fallback
+            # find user by matching the peer message's from_id
+            from_id = getattr(msg, "from_id", None)
+            if from_id is not None and hasattr(from_id, "user_id"):
+                uid = from_id.user_id
+            U.update_user_settings(uid, job_target=chat_id)
+            try:
+                await bot.send_message(uid, "Keyboard closed.", buttons=Button.clear())
+            except Exception:
+                pass
+            await bot.send_message(
+                uid,
+                f"✅ Group selected: `{chat_id}`\n\n"
+                f"Now tap **🔁 Jobs → ➕ New job**.",
+                buttons=P.jobs_buttons(),
+                parse_mode="md",
+            )
+        except Exception as e:
+            log_bot.error(f"peer selection handler error: {e}")
 
     # ---- text router ----
     @bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
@@ -310,6 +313,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         step = st.get("step") or "idle"
         awaiting = st.get("awaiting") or {}
 
+        # ---- QR 2FA password ----
         if awaiting.get("qr_2fa_password"):
             awaiting.pop("qr_2fa_password", None)
             rt.save_state()
@@ -317,7 +321,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 from .qr_login import finish_qr_2fa
                 ok, msg = await finish_qr_2fa(rt, uid, text)
                 if ok:
-                    await event.respond("✅ Logged in. Clock started.")
+                    await event.respond("✅ Logged in.")
                 else:
                     await event.respond(f"❌ {msg}")
             except Exception as e:
@@ -325,13 +329,14 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
+        # ---- Job draft: interval custom ----
         if awaiting.get("job_interval_custom"):
             awaiting.pop("job_interval_custom", None)
             rt.save_state()
             try:
                 n = int(text)
                 if n < 60:
-                    await event.respond("Minimum is 60 seconds.")
+                    await event.respond("⚠️ Minimum is 60 seconds.")
                     return
                 draft = st.setdefault("job_draft", {})
                 draft["interval"] = n
@@ -340,16 +345,17 @@ def _register_handlers(rt: BotRuntime) -> None:
                                     buttons=P.job_duration_buttons(n),
                                     parse_mode="md")
             except Exception:
-                await event.respond("Invalid number.")
+                await event.respond("❌ Invalid number.")
             return
 
+        # ---- Job draft: duration custom ----
         if awaiting.get("job_duration_custom"):
             awaiting.pop("job_duration_custom", None)
             rt.save_state()
             try:
                 n = int(text)
                 if n < 1:
-                    await event.respond("Minimum is 1 minute.")
+                    await event.respond("⚠️ Minimum is 1 minute.")
                     return
                 draft = st.setdefault("job_draft", {})
                 draft["duration"] = n
@@ -358,20 +364,24 @@ def _register_handlers(rt: BotRuntime) -> None:
                                     buttons=P.job_text_buttons(),
                                     parse_mode="md")
             except Exception:
-                await event.respond("Invalid number.")
+                await event.respond("❌ Invalid number.")
             return
 
+        # ---- Job draft: message text ----
         if awaiting.get("job_text"):
             awaiting.pop("job_text", None)
             rt.save_state()
             draft = st.setdefault("job_draft", {})
             draft["text"] = text
+            # add target from user settings
+            draft["target"] = U.get_setting(uid, "job_target")
             rt.save_state()
             await event.respond(P.job_confirm_text(draft),
                                 buttons=P.job_confirm_buttons(draft),
                                 parse_mode="md")
             return
 
+        # ---- Job draft: .txt file ----
         if awaiting.get("job_text_file") and event.document:
             awaiting.pop("job_text_file", None)
             rt.save_state()
@@ -380,6 +390,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 file_text = data_bytes.decode("utf-8", errors="ignore")[:4000]
                 draft = st.setdefault("job_draft", {})
                 draft["text"] = file_text
+                draft["target"] = U.get_setting(uid, "job_target")
                 rt.save_state()
                 await event.respond(P.job_confirm_text(draft),
                                     buttons=P.job_confirm_buttons(draft),
@@ -388,6 +399,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ Could not read file: {e}")
             return
 
+        # ---- Login: phone ----
         if step == "phone":
             phone = re.sub(r"[^\d+]", "", text)
             if not phone:
@@ -402,7 +414,6 @@ def _register_handlers(rt: BotRuntime) -> None:
 
                 sent = await client.send_code_request(phone)
                 phone_code_hash = sent.phone_code_hash
-                log_bot.info(f"send_code_request OK for user {uid} phone {phone}")
 
                 if not st.get("_resend_tried"):
                     st["_resend_tried"] = True
@@ -412,57 +423,46 @@ def _register_handlers(rt: BotRuntime) -> None:
                             phone_code_hash=phone_code_hash,
                         ))
                         phone_code_hash = sms_result.phone_code_hash
-                        log_bot.info(f"ResendCodeRequest OK for user {uid}")
-                    except Exception as resend_err:
-                        err_name = type(resend_err).__name__
-                        if "SendCodeUnavailable" in err_name:
-                            log_bot.info("SendCodeUnavailable — app code only")
-                        else:
-                            log_bot.warning(f"ResendCodeRequest failed: {err_name}: {resend_err}")
+                    except Exception:
+                        pass
 
                 st["step"] = "code"
                 st["phone"] = phone
                 st["hash"] = phone_code_hash
                 rt.save_state()
                 await event.respond(
+                    "**🔐 Login — Step 2/2**\n\n"
                     "📨 Code sent.\n\n"
                     "Check **Telegram app** → chat with **Telegram** (blue checkmark).\n"
                     "If not there, check SMS.\n\n"
                     "Send the code with dashes, e.g. `1-2-3-4-5`."
                 )
             except PhoneNumberInvalidError:
-                await event.respond("Invalid phone number.")
+                await event.respond("❌ Invalid phone number.")
             except FloodWaitError as e:
-                await event.respond(f"Rate-limited; wait {e.seconds}s.")
-            except ConnectionError:
-                await event.respond("❌ Connection lost.")
-                try:
-                    client = rt.user_clients.get(uid)
-                    if client:
-                        await client.connect()
-                except Exception:
-                    pass
+                await event.respond(f"⏸ Rate-limited. Wait {e.seconds}s.")
             except Exception as e:
                 log_bot.error(f"send_code_request failed: {type(e).__name__}: {e}")
                 await event.respond(f"❌ Error: `{type(e).__name__}`")
             return
 
+        # ---- Login: code ----
         if step == "code":
             code = re.sub(r"\D", "", text)
             await _tidy(event)
             client = rt.user_clients.get(uid)
             if client is None:
-                await event.respond("Session expired. Use /login again.")
+                await event.respond("❌ Session expired. Use /login again.")
                 return
             try:
                 await client.sign_in(st["phone"], code, phone_code_hash=st["hash"])
             except SessionPasswordNeededError:
                 st["step"] = "2fa"
                 rt.save_state()
-                await event.respond("🔐 Send your 2FA password.")
+                await event.respond("**🔐 2FA required.**\n\nSend your 2FA password.")
                 return
             except PhoneCodeInvalidError:
-                await event.respond("Wrong code. Try again.")
+                await event.respond("❌ Wrong code. Try again.")
                 return
             except PhoneCodeExpiredError:
                 st["step"] = "idle"
@@ -470,10 +470,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 st["hash"] = None
                 st["_resend_tried"] = False
                 rt.save_state()
-                await event.respond("Code expired. Use /login again.")
-                return
-            except ConnectionError:
-                await event.respond("❌ Connection lost.")
+                await event.respond("⚠️ Code expired. Use /login again.")
                 return
             except Exception as e:
                 log_bot.error(f"sign_in failed: {type(e).__name__}: {e}")
@@ -482,19 +479,17 @@ def _register_handlers(rt: BotRuntime) -> None:
             await _finish_login(rt, uid, event, st)
             return
 
+        # ---- Login: 2FA ----
         if step == "2fa":
             await _tidy(event)
             client = rt.user_clients.get(uid)
             if client is None:
-                await event.respond("Session expired. Use /login again.")
+                await event.respond("❌ Session expired. Use /login again.")
                 return
             try:
                 await client.sign_in(password=text)
             except PasswordHashInvalidError:
-                await event.respond("Wrong password.")
-                return
-            except ConnectionError:
-                await event.respond("❌ Connection lost.")
+                await event.respond("❌ Wrong password.")
                 return
             except Exception as e:
                 log_bot.error(f"2fa sign_in failed: {type(e).__name__}: {e}")
@@ -503,6 +498,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             await _finish_login(rt, uid, event, st)
             return
 
+        # ---- Awaiting: interval ----
         if awaiting.get("interval"):
             awaiting.pop("interval", None)
             rt.save_state()
@@ -510,13 +506,14 @@ def _register_handlers(rt: BotRuntime) -> None:
                 n = int(text)
                 if 1 <= n <= 60:
                     U.update_user_settings(uid, interval=n)
-                    await event.respond(f"Interval set to {n} min.")
+                    await event.respond(f"✅ Interval set to {n} min.")
                 else:
-                    await event.respond("Must be 1–60.")
+                    await event.respond("⚠️ Must be 1–60.")
             except Exception:
-                await event.respond("Invalid number.")
+                await event.respond("❌ Invalid number.")
             return
 
+        # ---- Awaiting: timezone ----
         if awaiting.get("timezone"):
             awaiting.pop("timezone", None)
             rt.save_state()
@@ -524,38 +521,42 @@ def _register_handlers(rt: BotRuntime) -> None:
                 from zoneinfo import ZoneInfo
                 ZoneInfo(text)
                 U.update_user_settings(uid, timezone=text)
-                await event.respond(f"Timezone set to `{text}`.")
+                await event.respond(f"✅ Timezone set to `{text}`.")
             except Exception:
-                await event.respond("Invalid timezone.")
+                await event.respond("❌ Invalid timezone.")
             return
 
+        # ---- Awaiting: base name ----
         if awaiting.get("base_name"):
             awaiting.pop("base_name", None)
             rt.save_state()
             U.update_user_settings(uid, base_name=text)
-            await event.respond("Base name updated.")
+            await event.respond("✅ Base name updated.")
             return
 
+        # ---- Awaiting: custom name font ----
         if awaiting.get("custom_name_font"):
             awaiting.pop("custom_name_font", None)
             rt.save_state()
             if len(text) < 26:
-                await event.respond("Need at least 26 characters (A–Z).")
+                await event.respond("⚠️ Need at least 26 characters (A–Z).")
             else:
                 U.update_user_settings(uid, custom_name_font=text[:26])
-                await event.respond("Custom name font saved.")
+                await event.respond("✅ Custom name font saved.")
             return
 
+        # ---- Awaiting: custom clock font ----
         if awaiting.get("custom_clock_font"):
             awaiting.pop("custom_clock_font", None)
             rt.save_state()
             if len(text) < 10:
-                await event.respond("Need at least 10 characters (0–9).")
+                await event.respond("⚠️ Need at least 10 characters (0–9).")
             else:
                 U.update_user_settings(uid, custom_clock_font=text[:10])
-                await event.respond("Custom clock font saved.")
+                await event.respond("✅ Custom clock font saved.")
             return
 
+        # ---- Awaiting: user request diamonds ----
         user_key = f"user_reqdiamonds:{uid}"
         if awaiting.get(user_key):
             awaiting.pop(user_key, None)
@@ -565,7 +566,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 if not (1 <= amount <= 10000):
                     raise ValueError
             except Exception:
-                await event.respond("Invalid amount. Send a number 1–10000.")
+                await event.respond("❌ Invalid amount. Send a number 1–10000.")
                 return
             req = R.create_diamond_request(uid, amount)
             await event.respond(f"✅ Request `{req['id']}` sent to admin.")
@@ -584,14 +585,12 @@ async def _finish_login(rt: BotRuntime, uid: int, event, st: dict) -> None:
         log_bot.info(f"Logged in user {uid} as {me.first_name} ({me.id})")
     except Exception:
         pass
-    await event.respond("✅ Logged in.")
-    try:
-        client = rt.user_clients.get(uid)
-        settings = U.get_user_settings(uid)
-        if settings.get("clock_on") and client:
-            CLK.start_clock(client, uid)
-    except Exception:
-        pass
+    await event.respond(
+        "✅ **Logged in!**\n\n"
+        "You can now use the bot:",
+        buttons=P.main_panel_buttons(),
+        parse_mode="md",
+    )
 
 
 async def _route_callback(rt: BotRuntime, event, data: str) -> None:
@@ -599,6 +598,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     uid = event.sender_id
     st = rt.state_for(uid)
     settings = U.get_user_settings(uid)
+    logged_in = rt.is_logged_in(uid)
 
     async def edit(text: str, buttons=None):
         try:
@@ -611,6 +611,26 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             except Exception:
                 pass
 
+    # ---- Login required for all main nav ----
+    if data.startswith("nav:") and data != "nav:help" and not logged_in:
+        await edit(P.login_required_text(), P.login_required_buttons())
+        return
+
+    # ---- Auth start ----
+    if data == "auth:start_login":
+        st["step"] = "phone"
+        st["phone"] = None
+        st["hash"] = None
+        st["_resend_tried"] = False
+        rt.save_state()
+        await edit(
+            "**🔐 Login — Step 1/2**\n\n"
+            "📱 Send your phone number with country code.\n\n"
+            "Example: `+989121234567`"
+        )
+        return
+
+    # ---- Navigation ----
     if data == "nav:main":
         await edit(P.main_panel_text(uid), P.main_panel_buttons()); return
     if data == "nav:status":
@@ -626,6 +646,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "nav:help":
         await edit(P.help_text(), P.help_buttons()); return
 
+    # ---- Web panel ----
     if data == "nav:webpanel":
         try:
             from .user_panel import issue_web_token
@@ -638,26 +659,20 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                 "_Keep the link private._",
                 [
                     [Button.url("Open Web Panel", url)],
-                    [Button.inline("◀️ Back", b"nav:main")],
+                    [Button.inline("◀️ Back", b"nav:main", style="primary")],
                 ],
             )
         except Exception as e:
             log_bot.error(f"webpanel error: {e}")
             await edit(f"❌ Could not generate link: {e}",
-                       [[Button.inline("◀️ Back", b"nav:main")]])
+                       [[Button.inline("◀️ Back", b"nav:main", style="primary")]])
         return
 
+    # ---- Clock ----
     if data == "clock:on":
         client = rt.user_clients.get(uid)
         if not client:
-            await _safe_answer(event, "Login first (/login).", alert=True)
-            return
-        try:
-            authorized = await client.is_user_authorized()
-        except Exception:
-            authorized = False
-        if not authorized:
-            await _safe_answer(event, "Login first (/login).", alert=True)
+            await edit(P.login_required_text(), P.login_required_buttons())
             return
         U.update_user_settings(uid, clock_on=True)
         CLK.start_clock(client, uid)
@@ -671,17 +686,18 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             CLK.stop_clock(uid)
         await edit(P.main_panel_text(uid), P.main_panel_buttons()); return
 
+    # ---- Settings ----
     if data == "set:interval":
         st["awaiting"]["interval"] = True
         rt.save_state()
-        await edit("Send interval (1–60):",
-                   [[Button.inline("◀️ Back", b"nav:settings")]])
+        await edit("⏱ Send interval (1–60):",
+                   [[Button.inline("◀️ Back", b"nav:settings", style="primary")]])
         return
     if data == "set:timezone":
         st["awaiting"]["timezone"] = True
         rt.save_state()
-        await edit("Send timezone (e.g. Europe/Berlin):",
-                   [[Button.inline("◀️ Back", b"nav:settings")]])
+        await edit("🌍 Send timezone (e.g. Europe/Berlin):",
+                   [[Button.inline("◀️ Back", b"nav:settings", style="primary")]])
         return
     if data == "set:language":
         await edit(P.language_text(), P.language_buttons()); return
@@ -691,17 +707,22 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         save_config(CONFIG)
         await edit(P.language_text(), P.language_buttons()); return
 
+    # ---- Appearance ----
     if data == "app:base":
         st["awaiting"]["base_name"] = True
         rt.save_state()
-        await edit("Send new base name:",
-                   [[Button.inline("◀️ Back", b"nav:appearance")]])
+        await edit("✏️ Send new base name:",
+                   [[Button.inline("◀️ Back", b"nav:appearance", style="primary")]])
         return
     if data == "app:namefont":
-        rows = [[Button.inline(n, f"app:namefont:{n}".encode())] for n in
-                ["normal", "italic", "bold", "script", "fraktur", "double", "sans", "sans-bold"]]
-        rows.append([Button.inline("◀️ Back", b"nav:appearance")])
-        await edit("Pick a name font:", rows)
+        from .fonts import NAME_FONTS
+        rows = []
+        for f in NAME_FONTS.keys():
+            sample = P._sample_name_font(f)
+            rows.append([Button.inline(f"{f}  →  {sample}", f"app:namefont:{f}".encode(),
+                                        style="primary")])
+        rows.append([Button.inline("◀️ Back", b"nav:appearance", style="primary")])
+        await edit("**🔤 Pick a name font:**", rows)
         return
     if data.startswith("app:namefont:"):
         font = data.split(":")[-1]
@@ -709,9 +730,13 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit(P.appearance_text(uid), P.appearance_buttons()); return
     if data == "app:clockfont":
         from .fonts import DIGIT_FONTS
-        rows = [[Button.inline(n, f"app:clockfont:{n}".encode())] for n in DIGIT_FONTS.keys()]
-        rows.append([Button.inline("◀️ Back", b"nav:appearance")])
-        await edit("Pick a clock font:", rows)
+        rows = []
+        for f in DIGIT_FONTS.keys():
+            sample = P._sample_clock_font(f)
+            rows.append([Button.inline(f"{f}  →  {sample}", f"app:clockfont:{f}".encode(),
+                                        style="primary")])
+        rows.append([Button.inline("◀️ Back", b"nav:appearance", style="primary")])
+        await edit("**🕐 Pick a clock font:**", rows)
         return
     if data.startswith("app:clockfont:"):
         font = data.split(":")[-1]
@@ -720,30 +745,41 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "app:customname":
         st["awaiting"]["custom_name_font"] = True
         rt.save_state()
-        await edit("Send 26 characters for A–Z:",
-                   [[Button.inline("◀️ Back", b"nav:appearance")]])
+        await edit("🅰️ Send 26 characters for A–Z:",
+                   [[Button.inline("◀️ Back", b"nav:appearance", style="primary")]])
         return
     if data == "app:customclock":
         st["awaiting"]["custom_clock_font"] = True
         rt.save_state()
-        await edit("Send 10 characters for 0–9:",
-                   [[Button.inline("◀️ Back", b"nav:appearance")]])
+        await edit("0️⃣ Send 10 characters for 0–9:",
+                   [[Button.inline("◀️ Back", b"nav:appearance", style="primary")]])
         return
 
+    # ---- Jobs ----
     if data == "job:new":
         st["job_draft"] = {}
         st["awaiting"] = {}
         rt.save_state()
         target = settings.get("job_target")
         if not target:
-            await edit(P.group_selection_text(), P.group_selection_buttons())
+            kb = P.group_selector_reply_keyboard()
+            if kb:
+                try:
+                    await bot.send_message(event.chat_id, P.group_selector_text(), buttons=kb)
+                except Exception:
+                    await edit(
+                        "🎯 **Select Target Group**\n\n"
+                        "Send `/setgroup <chat_id>` first, or tap the reply keyboard.",
+                        [[Button.inline("◀️ Back", b"nav:jobs", style="primary")]],
+                    )
+            else:
+                await edit(
+                    "🎯 **Select Target Group**\n\n"
+                    "Send `/setgroup <chat_id>` first.",
+                    [[Button.inline("◀️ Back", b"nav:jobs", style="primary")]],
+                )
             return
         await edit(P.job_setup_text(), P.job_setup_buttons())
-        return
-
-    if data == "job:groupid:help":
-        await edit(P.group_id_help_text(),
-                   [[Button.inline("◀️ Back", b"nav:jobs")]])
         return
 
     if data.startswith("job:interval:"):
@@ -752,7 +788,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             st["awaiting"]["job_interval_custom"] = True
             rt.save_state()
             await edit("**Custom interval**\n\nSend a number (seconds, min 60):",
-                       [[Button.inline("◀️ Back", b"job:setup:back")]])
+                       [[Button.inline("◀️ Back", b"job:setup:back", style="primary")]])
             return
         try:
             interval_min = int(val)
@@ -770,7 +806,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             st["awaiting"]["job_duration_custom"] = True
             rt.save_state()
             await edit("**Custom duration**\n\nSend a number (minutes):",
-                       [[Button.inline("◀️ Back", b"job:setup:back")]])
+                       [[Button.inline("◀️ Back", b"job:setup:back", style="primary")]])
             return
         try:
             duration = int(val)
@@ -784,14 +820,14 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "job:text:enter":
         st["awaiting"]["job_text"] = True
         rt.save_state()
-        await edit("Send the message text now:",
-                   [[Button.inline("◀️ Back", b"job:setup:back")]])
+        await edit("📝 Send the message text now:",
+                   [[Button.inline("◀️ Back", b"job:setup:back", style="primary")]])
         return
     if data == "job:text:upload":
         st["awaiting"]["job_text_file"] = True
         rt.save_state()
-        await edit("Send a `.txt` file with the message:",
-                   [[Button.inline("◀️ Back", b"job:setup:back")]])
+        await edit("📎 Send a `.txt` file with the message:",
+                   [[Button.inline("◀️ Back", b"job:setup:back", style="primary")]])
         return
 
     if data == "job:confirm:start":
@@ -802,7 +838,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         target = settings.get("job_target")
         if not target:
             await edit("❌ No target group. Use `/setgroup <chat_id>` first.",
-                       [[Button.inline("◀️ Back", b"nav:jobs")]])
+                       [[Button.inline("◀️ Back", b"nav:jobs", style="primary")]])
             return
         ok, res = J.create_job(uid, target, interval, duration, text)
         if ok:
@@ -813,15 +849,15 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             rt.save_state()
             await edit(f"✅ Job `{job['id']}` started.\n"
                        f"Every {interval}s for {duration} min.",
-                       [[Button.inline("📋 Jobs", b"nav:jobs")]])
+                       [[Button.inline("📋 Jobs", b"nav:jobs", style="primary")]])
         else:
             if res == "insufficient":
                 bal = E.get_balance(uid)
                 await edit(f"❌ Insufficient diamonds. Need {E.cost_job()}, you have {bal}.",
-                           [[Button.inline("◀️ Back", b"job:setup:back")]])
+                           [[Button.inline("◀️ Back", b"job:setup:back", style="primary")]])
             else:
                 await edit(f"❌ {res}",
-                           [[Button.inline("◀️ Back", b"job:setup:back")]])
+                           [[Button.inline("◀️ Back", b"job:setup:back", style="primary")]])
         return
 
     if data == "job:setup:back":
@@ -837,47 +873,32 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit(P.jobs_text(uid), P.jobs_buttons()); return
     if data == "job:stopall":
         n = J.stop_all(owner_id=uid)
-        await edit(f"Stopped {n} jobs.",
-                   [[Button.inline("◀️ Back", b"nav:jobs")]])
-        return
-    if data == "job:templates":
-        tpls = J.list_templates(uid)
-        if not tpls:
-            await edit("No templates.",
-                       [[Button.inline("◀️ Back", b"nav:jobs")]])
-            return
-        rows = [[Button.inline(n, f"job:tpl:{n}".encode())] for n in tpls.keys()]
-        rows.append([Button.inline("◀️ Back", b"nav:jobs")])
-        await edit("Templates:", rows)
-        return
-    if data.startswith("job:tpl:"):
-        name = data.split(":", 2)[-1]
-        tpl = J.load_template(uid, name) or ""
-        await edit(f"**{name}**\n\n{tpl}",
-                   [[Button.inline("◀️ Back", b"nav:jobs")]])
+        await edit(f"⏹ Stopped {n} jobs.",
+                   [[Button.inline("◀️ Back", b"nav:jobs", style="primary")]])
         return
 
+    # ---- Account ----
     if data == "acc:reqdiamonds":
         st["awaiting"][f"user_reqdiamonds:{uid}"] = True
         rt.save_state()
         await edit("💎 **Request diamonds**\n\nSend the amount (1–10000):",
-                   [[Button.inline("◀️ Back", b"nav:account")]])
+                   [[Button.inline("◀️ Back", b"nav:account", style="primary")]])
         return
     if data == "acc:myreq":
         items = R.for_user(uid)[:20]
         if not items:
-            await edit("No requests.", [[Button.inline("◀️ Back", b"nav:account")]])
+            await edit("_No requests._",
+                       [[Button.inline("◀️ Back", b"nav:account", style="primary")]])
             return
         txt = "\n".join(f"• `{r['id']}` — {r['type']} — {r['status']}" for r in items)
-        await edit(txt, [[Button.inline("◀️ Back", b"nav:account")]])
+        await edit(txt, [[Button.inline("◀️ Back", b"nav:account", style="primary")]])
         return
     if data == "acc:referral":
         stats = REF.stats(uid)
         await edit(
             f"**🤝 My referral code**\n\n`{stats['code']}`\n\n"
-            f"Share this code — you both get diamonds when a friend joins.\n\n"
             f"**Total referrals:** {stats['count']}",
-            [[Button.inline("◀️ Back", b"nav:account")]],
+            [[Button.inline("◀️ Back", b"nav:account", style="primary")]],
         )
         return
     if data == "acc:notify":
@@ -940,10 +961,6 @@ async def _handle_qr_login(rt: BotRuntime, uid: int, event) -> None:
                             caption=caption, parse_mode="md", force_document=False)
     except Exception as e:
         log_bot.error(f"QR image send failed: {type(e).__name__}: {e}")
-        try:
-            await bot.send_message(event.chat_id, f"Failed to send QR image: {e}")
-        except Exception:
-            pass
 
 
 async def _watchdog(rt: BotRuntime) -> None:

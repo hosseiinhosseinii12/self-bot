@@ -8,12 +8,11 @@ from typing import Dict, List, Optional
 from .config import CONFIG
 from .economy import cost_job, cost_job_message, spend
 from .logging_setup import log_jobs
-from .store import history_store, templates_store
+from .store import history_store
 
 MIN_REPEAT_SEC = 60
 MAX_DURATION_MIN = 720
 MAX_MESSAGES = 200
-MAX_TEMPLATES = 20
 MAX_HISTORY = 30
 
 _active_jobs: Dict[str, asyncio.Task] = {}
@@ -28,39 +27,6 @@ def _rand_id(n: int = 6) -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 
-def save_template(user_id: int, name: str, text: str) -> tuple:
-    key = str(user_id)
-    tpls = templates_store.get(key) or {}
-    if not isinstance(tpls, dict):
-        tpls = {}
-    if name not in tpls and len(tpls) >= MAX_TEMPLATES:
-        return False, f"Template limit reached ({MAX_TEMPLATES})."
-    tpls[name] = text
-    templates_store.set(key, tpls)
-    return True, "saved"
-
-
-def load_template(user_id: int, name: str) -> Optional[str]:
-    tpls = templates_store.get(str(user_id)) or {}
-    if isinstance(tpls, dict):
-        return tpls.get(name)
-    return None
-
-
-def list_templates(user_id: int) -> dict:
-    tpls = templates_store.get(str(user_id)) or {}
-    return tpls if isinstance(tpls, dict) else {}
-
-
-def delete_template(user_id: int, name: str) -> bool:
-    tpls = templates_store.get(str(user_id)) or {}
-    if isinstance(tpls, dict) and name in tpls:
-        del tpls[name]
-        templates_store.set(str(user_id), tpls)
-        return True
-    return False
-
-
 def _append_history(entry: dict) -> None:
     data = history_store.all()
     if not isinstance(data, list):
@@ -69,13 +35,6 @@ def _append_history(entry: dict) -> None:
     if len(data) > MAX_HISTORY:
         data = data[-MAX_HISTORY:]
     history_store.replace(data)
-
-
-def history() -> List[dict]:
-    data = history_store.all()
-    if not isinstance(data, list):
-        return []
-    return list(reversed(data))
 
 
 def render_variables(text: str, job: dict, sent_count: int) -> str:
@@ -94,9 +53,7 @@ def render_variables(text: str, job: dict, sent_count: int) -> str:
 
 
 def create_job(owner_id: int, chat_id: int, interval_seconds: int,
-               duration_minutes: int, text: str,
-               start_at: Optional[str] = None,
-               end_at: Optional[str] = None) -> tuple:
+               duration_minutes: int, text: str) -> tuple:
     interval_seconds = max(MIN_REPEAT_SEC, int(interval_seconds))
     duration_minutes = max(1, min(MAX_DURATION_MIN, int(duration_minutes)))
 
@@ -116,7 +73,7 @@ def create_job(owner_id: int, chat_id: int, interval_seconds: int,
         "status": "running",
     }
     _job_meta[job_id] = job
-    log_jobs.info(f"job created id={job_id} owner={owner_id}")
+    log_jobs.info(f"job created id={job_id} owner={owner_id} target={chat_id}")
     return True, job
 
 
@@ -149,21 +106,6 @@ def stop_all(owner_id: Optional[int] = None) -> int:
             _append_history(job)
         _active_jobs.pop(jid, None)
         n += 1
-    return n
-
-
-def stop_jobs_in_chat(chat_id: int) -> int:
-    n = 0
-    for jid, job in list(_job_meta.items()):
-        if job.get("chat_id") == int(chat_id) and job.get("status") == "running":
-            task = _active_jobs.get(jid)
-            if task and not task.done():
-                task.cancel()
-            job["status"] = "stopped"
-            job["finished_at"] = _now_iso()
-            _append_history(job)
-            _active_jobs.pop(jid, None)
-            n += 1
     return n
 
 

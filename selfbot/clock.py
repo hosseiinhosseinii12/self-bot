@@ -1,6 +1,9 @@
-"""Per-user profile-name clock."""
+"""Per-user profile-name clock — accurate to the second.
+
+Instead of a coarse "wait until next minute" loop, we schedule the
+next write at the exact boundary: at minute % interval == 0, second 0.
+"""
 import asyncio
-import re
 import time
 from datetime import datetime
 from typing import Dict, Optional
@@ -15,8 +18,6 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     from backports.zoneinfo import ZoneInfo  # type: ignore
-
-TIME_RE = re.compile(r"^(.+?)\s+\d{1,2}:\d{2}$")
 
 _clock_tasks: Dict[int, dict] = {}
 
@@ -82,35 +83,72 @@ def _should_write_now(user_id: int) -> bool:
     return spend(user_id, cost, "clock_update")
 
 
+def _seconds_to_next_boundary(tz: ZoneInfo, interval_min: int) -> float:
+    """Return seconds until the next minute where minute % interval == 0 and sec == 0."""
+    now = datetime.now(tz)
+    interval_min = max(1, min(60, int(interval_min)))
+    current_minute = now.minute
+    # find next minute that is a multiple of interval_min
+    remainder = current_minute % interval_min
+    if remainder == 0 and now.second == 0 and now.microsecond < 100_000:
+        # we're already on a boundary
+        return 0.5
+    if remainder == 0:
+        # wait until next interval boundary (skip a full interval)
+        wait_minutes = interval_min
+    else:
+        wait_minutes = interval_min - remainder
+    # seconds until next xx:00 of that minute
+    seconds_until = wait_minutes * 60 - now.second - now.microsecond / 1_000_000
+    if seconds_until < 0:
+        seconds_until += 60
+    return max(0.5, seconds_until)
+
+
 async def _clock_loop(user_client, user_id: int, task_id: str) -> None:
     log_clock.info(f"clock loop started user={user_id} task_id={task_id}")
+
     while True:
         slot = _clock_tasks.get(user_id) or {}
         if slot.get("task_id") != task_id:
+            log_clock.info(f"clock loop user={user_id} task_id={task_id} superseded")
             return
+
         settings = get_user_settings(user_id)
         if not settings.get("clock_on"):
+            log_clock.info(f"clock loop user={user_id} disabled")
             return
+
         if not _should_write_now(user_id):
             log_clock.warning(f"insufficient diamonds for user {user_id}, pausing")
             await asyncio.sleep(30)
             continue
+
         tz_name = settings.get("timezone", "UTC")
         try:
             tz = ZoneInfo(tz_name)
         except Exception:
             tz = ZoneInfo("UTC")
         now = datetime.now(tz)
+
         target = _build_target_name(settings, now)
         await _write_name(user_client, target, user_id)
+
         interval = max(1, min(60, int(settings.get("interval", 5))))
-        for _ in range(interval * 60):
+        wait = _seconds_to_next_boundary(tz, interval)
+        log_clock.info(f"clock user={user_id} wrote, sleeping {wait:.1f}s")
+
+        # sleep in small chunks so we can react to task_id changes
+        slept = 0.0
+        while slept < wait:
             slot = _clock_tasks.get(user_id) or {}
             if slot.get("task_id") != task_id:
                 return
             if not get_user_settings(user_id).get("clock_on"):
                 return
-            await asyncio.sleep(1)
+            step = min(1.0, wait - slept)
+            await asyncio.sleep(step)
+            slept += step
 
 
 def start_clock(user_client, user_id: int = None) -> str:
@@ -120,6 +158,7 @@ def start_clock(user_client, user_id: int = None) -> str:
     task = asyncio.create_task(_clock_loop(user_client, uid, task_id))
     _clock_tasks[uid] = {"task_id": task_id, "task": task, "last": None}
     update_user_settings(uid, clock_on=True)
+    log_clock.info(f"clock started for user {uid}")
     return task_id
 
 
@@ -131,6 +170,7 @@ def stop_clock(user_id: int = None) -> None:
         if not t.done():
             t.cancel()
     update_user_settings(uid, clock_on=False)
+    log_clock.info(f"clock stopped for user {uid}")
 
 
 async def stop_clock_async(user_client, user_id: int = None) -> None:

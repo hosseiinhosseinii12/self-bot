@@ -1,4 +1,4 @@
-"""Font maps for base names and clock digits, with custom font support."""
+"""Font maps for base names and clock digits, with previews."""
 from .config import CONFIG
 
 NAME_FONTS = {
@@ -33,13 +33,6 @@ DIGIT_FONTS = {
 
 
 def apply_name_font(text: str, font_name: str, custom: str = "") -> str:
-    """Apply a name font. `custom` is a string of 26 characters (A–Z).
-
-    Priority:
-      1. explicit `custom` argument (if 26+ chars)
-      2. CONFIG['custom_name_font'] (if 26+ chars)
-      3. built-in mapping from NAME_FONTS
-    """
     custom = custom or CONFIG.get("custom_name_font", "") or ""
     if len(custom) >= 26:
         out = []
@@ -62,15 +55,36 @@ def apply_name_font(text: str, font_name: str, custom: str = "") -> str:
 
 
 def apply_clock_font(text: str, font_name: str, custom: str = "") -> str:
-    """Apply a clock digit font. `custom` is a string of 10 characters (0–9).
-
-    Priority:
-      1. explicit `custom` argument (if 10+ chars)
-      2. CONFIG['custom_clock_font'] (if 10+ chars)
-      3. built-in mapping from DIGIT_FONTS
-    """
     custom = custom or CONFIG.get("custom_clock_font", "") or ""
     if len(custom) >= 10:
         return "".join(custom[int(c)] if c.isdigit() else c for c in text)
     mapping = DIGIT_FONTS.get(font_name, DIGIT_FONTS["double"])
     return "".join(mapping[int(c)] if c.isdigit() else c for c in text)
+
+
+# ===========================================================================
+# Previews for inline buttons
+# ===========================================================================
+def name_font_preview(font_name: str, base_name: str = "User") -> str:
+    """Return a short styled preview of the base name with the given font."""
+    sample = (base_name or "User")[:8]
+    try:
+        return apply_name_font(sample, font_name)
+    except Exception:
+        return sample
+
+
+def clock_font_preview(font_name: str, now_hm: str = "12:34") -> str:
+    """Return a short styled preview of a clock time with the given font."""
+    try:
+        return apply_clock_font(now_hm, font_name)
+    except Exception:
+        return now_hm
+
+
+def list_name_fonts() -> list:
+    return list(NAME_FONTS.keys())
+
+
+def list_clock_fonts() -> list:
+    return list(DIGIT_FONTS.keys())
