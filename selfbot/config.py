@@ -35,7 +35,7 @@ DEFAULTS = {
     "use_proxy": True,
     "proxy_url": "socks5://127.0.0.1:1080",
     "language": "en",
-    "timezone": "UTC",
+    "timezone": "Asia/Tehran",
     "interval": 5,
     "base_name": "User",
     "name_font": "normal",

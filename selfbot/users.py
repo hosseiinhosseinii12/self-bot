@@ -58,7 +58,7 @@ def ensure_user(user_id: int, username: str = "", first_name: str = "",
         "last_seen": _now_iso(),
         "clock_on": False,
         "interval": 5,
-        "timezone": "UTC",
+        "timezone": "Asia/Tehran",       # default
         "base_name": "User",
         "name_font": "normal",
         "clock_font": "double",
@@ -182,7 +182,7 @@ def get_user_settings(user_id: int) -> dict:
     return {
         "clock_on": bool(u.get("clock_on", False)),
         "interval": int(u.get("interval", 5)),
-        "timezone": u.get("timezone", "UTC"),
+        "timezone": u.get("timezone", "Asia/Tehran"),
         "base_name": u.get("base_name", "User"),
         "name_font": u.get("name_font", "normal"),
         "clock_font": u.get("clock_font", "double"),

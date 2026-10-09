@@ -1,9 +1,4 @@
-"""Inline keyboard panels for the Telegram bot.
-
-- Color-coded action buttons (green/red/blue)
-- ALL Back buttons are colorless (default Telegram style)
-- Job flow: group first, then interval/duration/text
-"""
+"""Inline keyboard panels — QR Login in login screen, peer selector robust."""
 from typing import List, Optional
 
 from .config import CONFIG
@@ -40,6 +35,31 @@ def _back_btn(data: bytes = b"nav:main"):
 
 
 # ===========================================================================
+# Login screen — now includes QR Login
+# ===========================================================================
+def login_required_buttons() -> List[List]:
+    return [
+        [Button.inline("🔐 Login with phone", b"auth:start_login", style="success")],
+        [Button.inline("📱 Login with QR code", b"auth:qr_login", style="primary")],
+        [Button.inline("❓ Help", b"nav:help", style="primary")],
+    ]
+
+
+def login_required_text() -> str:
+    return (
+        "**🔐 Login required**\n\n"
+        "You need to log in to your Telegram account first "
+        "to use the bot features (clock, jobs, etc.).\n\n"
+        "**Two ways to log in:**\n\n"
+        "📱 **QR code** — fastest, no SMS needed\n"
+        "   Open Telegram on your phone → Settings → Devices → "
+        "Link Desktop Device → scan the QR.\n\n"
+        "📞 **Phone number** — enter your number and wait for the code.\n\n"
+        "_Your session is stored locally on the server._"
+    )
+
+
+# ===========================================================================
 # Main panel
 # ===========================================================================
 def main_panel_buttons() -> List[List]:
@@ -65,7 +85,7 @@ def main_panel_text(user_id: int = None) -> str:
     state = "🟢 ON" if settings.get("clock_on") else "🔴 OFF"
     base = settings.get("base_name", "User")
     interval = settings.get("interval", 5)
-    tz = settings.get("timezone", "UTC")
+    tz = settings.get("timezone", "Asia/Tehran")
     last = last_written(uid) or "—"
     bal = get_balance(uid)
 
@@ -82,7 +102,7 @@ def main_panel_text(user_id: int = None) -> str:
 
 
 # ===========================================================================
-# Status
+# Status / Settings / Appearance
 # ===========================================================================
 def status_buttons() -> List[List]:
     return [[_back_btn(b"nav:main")]]
@@ -97,7 +117,7 @@ def status_text(user_id: int = None) -> str:
         f"**📊 Status**\n\n"
         f"**Clock:** {state}\n"
         f"**Interval:** {settings.get('interval', 5)} min\n"
-        f"**Timezone:** {settings.get('timezone', 'UTC')}\n"
+        f"**Timezone:** {settings.get('timezone', 'Asia/Tehran')}\n"
         f"**Base name:** `{settings.get('base_name', 'User')}`\n"
         f"**Name font:** {settings.get('name_font', 'normal')}\n"
         f"**Clock font:** {settings.get('clock_font', 'double')}\n"
@@ -105,9 +125,6 @@ def status_text(user_id: int = None) -> str:
     )
 
 
-# ===========================================================================
-# Settings
-# ===========================================================================
 def settings_buttons() -> List[List]:
     return [
         [Button.inline("⏱ Interval", b"set:interval", style="primary"),
@@ -123,14 +140,11 @@ def settings_text(user_id: int = None) -> str:
     return (
         f"**⚙️ Settings**\n\n"
         f"**Interval:** {settings.get('interval', 5)} min\n"
-        f"**Timezone:** {settings.get('timezone', 'UTC')}\n"
+        f"**Timezone:** {settings.get('timezone', 'Asia/Tehran')}\n"
         f"**Language:** {CONFIG.get('language', 'en')}"
     )
 
 
-# ===========================================================================
-# Appearance
-# ===========================================================================
 def appearance_buttons() -> List[List]:
     return [
         [Button.inline("✏️ Base name", b"app:base", style="primary")],
@@ -198,7 +212,7 @@ def jobs_text(user_id: int = None) -> str:
 
 
 # ===========================================================================
-# JOB FLOW — Step 1: Select group
+# JOB FLOW — Step 1: Group
 # ===========================================================================
 def job_group_buttons(has_recent: bool = False) -> List[List]:
     rows = []
@@ -362,44 +376,81 @@ def job_confirm_text(job: dict) -> str:
 
 
 # ===========================================================================
-# Group selector — Reply Keyboard
+# Group selector — robust reply keyboard
 # ===========================================================================
 def group_selector_text() -> str:
     return (
         "**🎯 Select Target Group**\n\n"
-        "Tap the **🎯 Select a group** button below the input field.\n\n"
-        "Telegram will open your chat list — pick the group."
+        "Tap the **🎯 Select a group** button **below the input field** "
+        "(not in this message).\n\n"
+        "Telegram will open your chat list — pick the group you want.\n\n"
+        "_If the button does not appear, your Telegram client may be too old._"
     )
 
 
 def group_selector_reply_keyboard():
+    """Return a ReplyKeyboardMarkup with the peer-request button.
+
+    Tries multiple import paths for maximum compatibility.
+    """
+    # --- Try to import all needed types ---
+    KeyboardButtonRequestPeer = None
+    RequestPeerTypeChat = None
+    KeyboardButtonRow = None
+    ReplyKeyboardMarkup = None
+
+    for mod_name in ("telethon.tl.types", "telethon.tl.types.messages_and_media"):
+        try:
+            import importlib
+            mod = importlib.import_module(mod_name)
+            if KeyboardButtonRequestPeer is None:
+                KeyboardButtonRequestPeer = getattr(mod, "KeyboardButtonRequestPeer", None)
+            if RequestPeerTypeChat is None:
+                RequestPeerTypeChat = getattr(mod, "RequestPeerTypeChat", None)
+            if KeyboardButtonRow is None:
+                KeyboardButtonRow = getattr(mod, "KeyboardButtonRow", None)
+            if ReplyKeyboardMarkup is None:
+                ReplyKeyboardMarkup = getattr(mod, "ReplyKeyboardMarkup", None)
+        except Exception:
+            pass
+
+    if not all([KeyboardButtonRequestPeer, RequestPeerTypeChat,
+                KeyboardButtonRow, ReplyKeyboardMarkup]):
+        return None
+
+    import random
     try:
-        from telethon.tl.types import (
-            KeyboardButtonRequestPeer,
-            RequestPeerTypeChat,
-            KeyboardButtonRow,
-            ReplyKeyboardMarkup,
+        req_btn = KeyboardButtonRequestPeer(
+            text="🎯 Select a group",
+            button_id=random.randint(100000, 999999),
+            peer_type=RequestPeerTypeChat(),
+            max_quantity=1,
         )
-        import random
-        return ReplyKeyboardMarkup(
-            rows=[
-                KeyboardButtonRow(
-                    buttons=[
-                        KeyboardButtonRequestPeer(
-                            text="🎯 Select a group",
-                            button_id=random.randint(100000, 999999),
-                            peer_type=RequestPeerTypeChat(),
-                            max_quantity=1,
-                        )
-                    ]
-                )
-            ],
+        row = KeyboardButtonRow(buttons=[req_btn])
+        kb = ReplyKeyboardMarkup(
+            rows=[row],
             resize=True,
             single_use=True,
             placeholder="Tap 🎯 to choose a group…",
         )
-    except Exception:
-        return None
+        return kb
+    except Exception as e:
+        # fallback signature (some Telethon versions use different kwargs)
+        try:
+            req_btn = KeyboardButtonRequestPeer(
+                text="🎯 Select a group",
+                button_id=random.randint(100000, 999999),
+                peer_type=RequestPeerTypeChat(),
+                max_quantity=1,
+            )
+            kb = ReplyKeyboardMarkup(
+                rows=[[req_btn]],
+                resize=True,
+                single_use=True,
+            )
+            return kb
+        except Exception:
+            return None
 
 
 # ===========================================================================
@@ -411,7 +462,6 @@ def account_buttons() -> List[List]:
         [Button.inline("📜 My requests", b"acc:myreq", style="primary"),
          Button.inline("🤝 Referral", b"acc:referral", style="primary")],
         [Button.inline("🔔 Notifications", b"acc:notify", style="primary")],
-        [Button.inline("🔐 QR Login", b"acc:qrlogin", style="success")],
         [_back_btn(b"nav:main")],
     ]
 
@@ -432,7 +482,7 @@ def account_text(user_id: int = None) -> str:
 
 
 # ===========================================================================
-# Help
+# Help / Language / Notifications
 # ===========================================================================
 def help_buttons() -> List[List]:
     return [[_back_btn(b"nav:main")]]
@@ -457,9 +507,6 @@ def help_text() -> str:
     )
 
 
-# ===========================================================================
-# Language picker
-# ===========================================================================
 def language_buttons() -> List[List]:
     return [
         [Button.inline("English", b"set:lang:en", style="primary"),
@@ -472,9 +519,6 @@ def language_text() -> str:
     return f"**🗣 Language / زبان**\n\nCurrent: {CONFIG.get('language', 'en')}"
 
 
-# ===========================================================================
-# Notifications
-# ===========================================================================
 def notify_buttons() -> List[List]:
     owner = int(CONFIG.get("owner_id", 338266658))
     u = get_user(owner) or {}
@@ -493,25 +537,3 @@ def notify_buttons() -> List[List]:
 
 def notify_text() -> str:
     return "**🔔 Notifications**"
-
-
-# ===========================================================================
-# Login-required message
-# ===========================================================================
-def login_required_buttons() -> List[List]:
-    return [
-        [Button.inline("🔐 Login now", b"auth:start_login", style="success")],
-        [Button.inline("❓ Help", b"nav:help", style="primary")],
-    ]
-
-
-def login_required_text() -> str:
-    return (
-        "**🔐 Login required**\n\n"
-        "You need to log in to your Telegram account first "
-        "to use the bot features (clock, jobs, etc.).\n\n"
-        "**Why is it safe?**\n"
-        "• Your session is encrypted and stored on the server\n"
-        "• Only you can control your own profile\n\n"
-        "Tap **🔐 Login now** to start."
-    )
