@@ -74,43 +74,28 @@ def _seed_owner() -> None:
 # Force-register bot commands
 # ---------------------------------------------------------------------------
 async def _set_bot_commands(bot) -> None:
-    """Force-register bot commands in the Telegram menu button for all scopes."""
+    """Register ONLY the four basic commands in the Telegram menu."""
     try:
         from telethon.tl.functions.bots import SetBotCommandsRequest
         from telethon.tl.types import (
             BotCommand,
             BotCommandScopeDefault,
             BotCommandScopeAllPrivateChats,
-            BotCommandScopeAllGroupChats,
         )
     except ImportError as e:
         log_bot.warning(f"SetBotCommands types not available: {e}")
         return
 
     commands = [
-        BotCommand(command="start",      description="Open the control panel"),
-        BotCommand(command="login",      description="Log in with phone → code"),
-        BotCommand(command="logout",     description="Delete session"),
-        BotCommand(command="account",    description="Diamonds + subscription"),
-        BotCommand(command="request",    description="Request diamonds/sub"),
-        BotCommand(command="myrequests", description="List your requests"),
-        BotCommand(command="refer",      description="Apply a referral code"),
-        BotCommand(command="name",       description="Set base name"),
-        BotCommand(command="font",       description="Set name font"),
-        BotCommand(command="clockfont",  description="Set clock digit font"),
-        BotCommand(command="tz",         description="Set timezone"),
-        BotCommand(command="interval",   description="Set clock interval (min)"),
-        BotCommand(command="on",         description="Enable clock"),
-        BotCommand(command="off",        description="Disable clock"),
-        BotCommand(command="status",     description="Show current state"),
-        BotCommand(command="memory",     description="Memory tools"),
-        BotCommand(command="help",       description="Show help"),
+        BotCommand(command="start",  description="Open the panel"),
+        BotCommand(command="help",   description="Show help"),
+        BotCommand(command="login",  description="Log in with phone → code"),
+        BotCommand(command="logout", description="Delete session"),
     ]
 
     scopes = [
         BotCommandScopeDefault(),
         BotCommandScopeAllPrivateChats(),
-        BotCommandScopeAllGroupChats(),
     ]
 
     for scope in scopes:
@@ -123,7 +108,7 @@ async def _set_bot_commands(bot) -> None:
         except Exception as e:
             log_bot.warning(f"could not set commands for {type(scope).__name__}: {e}")
 
-    log_bot.info(f"registered {len(commands)} bot commands in menu")
+    log_bot.info(f"registered {len(commands)} commands: start, help, login, logout")
 
 
 # ---------------------------------------------------------------------------
