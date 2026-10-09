@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+data/
+*.session
+*.session-journal
+admin_secret.txt
+.DS_Store
+.pytest_cache/
+*.log
+backups/

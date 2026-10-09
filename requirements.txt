@@ -1,0 +1,14 @@
+telethon>=1.34
+python-socks[asyncio]>=2.4
+websockets>=12.0
+flask>=3.0
+gunicorn>=21.2
+apscheduler>=3.10
+backoff>=2.2
+rich>=13.0
+pysocks
+requests
+tzdata
+aiosqlite
+pyotp
+pytest
