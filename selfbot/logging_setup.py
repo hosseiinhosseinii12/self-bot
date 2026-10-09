@@ -11,7 +11,7 @@ _log_queue: "queue.Queue[logging.LogRecord]" = queue.Queue(-1)
 
 
 # ---------------------------------------------------------------------------
-# Ensure EVERY LogRecord has a 'service' attribute, even ones created by Flask
+# Ensure EVERY LogRecord has a 'service' attribute (Flask, APScheduler, etc.)
 # ---------------------------------------------------------------------------
 _original_factory = logging.getLogRecordFactory()
 
@@ -27,10 +27,15 @@ logging.setLogRecordFactory(_record_factory)
 
 
 class ServiceAdapter(logging.LoggerAdapter):
+    """Adds a `service` context without conflicting with the record factory."""
+
     def process(self, msg, kwargs):
         extra = kwargs.setdefault("extra", {})
-        extra.setdefault("service", self.extra.get("service", "self-bot"))
-        return f"[{extra['service']}] {msg}", kwargs
+        # Only set if not already present — prevents KeyError when the
+        # LogRecordFactory already populated it.
+        if "service" not in extra:
+            extra["service"] = self.extra.get("service", "self-bot")
+        return msg, kwargs
 
 
 def _build_root() -> logging.Logger:
