@@ -21,8 +21,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --upgrade -r requirements.txt \
     && pip install --no-cache-dir --upgrade --no-deps telethon \
-    && python -c "import telethon; print('telethon version:', telethon.__version__)" \
-    && python -c "from telethon.tl.types import AuthLoginToken; print('QR types OK')"
+    && python -c "import telethon; print('telethon version:', telethon.__version__)"
 
 COPY . .
 RUN mkdir -p /app/data /app/data/logs /app/data/backups

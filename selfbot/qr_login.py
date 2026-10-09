@@ -31,23 +31,35 @@ try:
     from telethon import TelegramClient
     from telethon.errors import SessionPasswordNeededError
 
-    # Try to import QR-specific types (Telethon >= 1.24)
+    # Try to import QR-specific types. These live under .types.auth
+    # (not .types) in Telethon >= 1.24.
     try:
         from telethon.tl.functions.auth import (ExportLoginTokenRequest,
                                                   AcceptLoginTokenRequest)
-        from telethon.tl.types import (AuthLoginToken,
-                                        AuthLoginTokenMigrateTo,
-                                        AuthLoginTokenSuccess)
+        from telethon.tl.types.auth import (AuthLoginToken,
+                                             AuthLoginTokenMigrateTo,
+                                             AuthLoginTokenSuccess)
         _HAS_QR_TYPES = True
-    except ImportError as _e:
-        _HAS_QR_TYPES = False
-        log_bot.warning(
-            f"qr_login: QR types missing (need Telethon>=1.24): {_e} "
-            f"(installed version: {TELETHON_VERSION})"
-        )
+    except ImportError:
+        # Fallback: try the flat path (some versions re-export)
+        try:
+            from telethon.tl.functions.auth import (ExportLoginTokenRequest,
+                                                      AcceptLoginTokenRequest)
+            from telethon.tl.types import (AuthLoginToken,
+                                            AuthLoginTokenMigrateTo,
+                                            AuthLoginTokenSuccess)
+            _HAS_QR_TYPES = True
+        except ImportError as _e:
+            _HAS_QR_TYPES = False
+            log_bot.warning(
+                f"qr_login: QR types missing (need Telethon>=1.24): {_e} "
+                f"(installed version: {TELETHON_VERSION})"
+            )
 
     HAS_TELETHON = True
-    log_bot.info(f"qr_login: telethon {TELETHON_VERSION} loaded, QR types={_HAS_QR_TYPES}")
+    log_bot.info(
+        f"qr_login: telethon {TELETHON_VERSION} loaded, QR types={_HAS_QR_TYPES}"
+    )
 except Exception as _e:
     HAS_TELETHON = False
     TELETHON_ERROR = f"{type(_e).__name__}: {_e}"
@@ -127,10 +139,6 @@ async def start_qr_login(runtime) -> tuple:
     # --- dependency checks ---
     if not HAS_TELETHON:
         return False, f"Telethon import failed: {TELETHON_ERROR or 'unknown'}", b"", 0
-    if not _HAS_QR_TYPES:
-        return (False,
-                f"Telethon too old (need >=1.24 for AuthLoginToken). "
-                f"Installed: {TELETHON_VERSION}", b"", 0)
     if not HAS_QRCODE:
         return False, f"qrcode import failed: {QRCODE_ERROR or 'not installed'}", b"", 0
 
@@ -165,6 +173,16 @@ async def start_qr_login(runtime) -> tuple:
 
     # --- fallback to manual ExportLoginTokenRequest ---
     if qr_url is None:
+        if not _HAS_QR_TYPES:
+            if fresh:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            return (False,
+                    f"Telethon too old (need >=1.24 for AuthLoginToken). "
+                    f"Installed: {TELETHON_VERSION}", b"", 0)
+
         try:
             result = await client(ExportLoginTokenRequest(
                 api_id=api_id,
@@ -253,7 +271,6 @@ async def _wait_native(runtime, qr_obj) -> None:
         await _notify(runtime, owner_id,
                       "✅ QR scanned. 🔐 2FA required.\nSend your 2FA password now.")
         runtime._qr_needs_2fa = True
-        # Attach password submission to next text message
         rt_state = getattr(runtime, "_state", {})
         rt_state.setdefault("awaiting", {})["qr_2fa_password"] = True
         try:
