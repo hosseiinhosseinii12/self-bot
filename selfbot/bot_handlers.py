@@ -1,4 +1,4 @@
-"""Telegram bot runtime — login-first, per-user, group-first job flow."""
+"""Telegram bot runtime — login-first with QR, per-user, group-first jobs."""
 import asyncio
 import io
 import os
@@ -46,7 +46,7 @@ class BotRuntime:
         self.watchdog_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._state: dict = {}
-        self._recent_groups: dict = {}   # uid -> last chat_id used
+        self._recent_groups: dict = {}
 
     def state_for(self, user_id: int) -> dict:
         return self._state.setdefault(int(user_id), {
@@ -170,17 +170,8 @@ def _register_handlers(rt: BotRuntime) -> None:
         if rt.is_logged_in(uid):
             await event.respond("✅ Already logged in.")
             return
-        st = rt.state_for(uid)
-        st["step"] = "phone"
-        st["phone"] = None
-        st["hash"] = None
-        st["_resend_tried"] = False
-        rt.save_state()
-        await event.respond(
-            "**🔐 Login — Step 1/2**\n\n"
-            "📱 Send your phone number with country code.\n\n"
-            "Example: `+989121234567`"
-        )
+        await event.respond(P.login_required_text(),
+                            buttons=P.login_required_buttons())
 
     # ---- /logout ----
     @bot.on(events.NewMessage(pattern=r"^/logout$", incoming=True))
@@ -266,13 +257,11 @@ def _register_handlers(rt: BotRuntime) -> None:
             draft["target"] = int(chat_id)
             rt.save_state()
 
-            # close reply keyboard
             try:
                 await bot.send_message(uid, "Keyboard closed.", buttons=Button.clear())
             except Exception:
                 pass
 
-            # continue job flow → interval
             await bot.send_message(
                 uid,
                 f"✅ Group selected: `{chat_id}`\n\n"
@@ -327,6 +316,25 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
+        # ---- Job draft: manual chat_id (fallback for old Telegram clients) ----
+        if awaiting.get("job_chat_id_manual"):
+            awaiting.pop("job_chat_id_manual", None)
+            rt.save_state()
+            try:
+                chat_id = int(text.strip())
+            except Exception:
+                await event.respond("❌ Invalid chat ID. Send a number like `-1001234567890`.")
+                return
+            rt.set_recent_group(uid, chat_id)
+            st.setdefault("job_draft", {})["target"] = chat_id
+            rt.save_state()
+            await event.respond(
+                P.job_interval_text(chat_id),
+                buttons=P.job_interval_buttons(),
+                parse_mode="md",
+            )
+            return
+
         # ---- Job draft: interval custom ----
         if awaiting.get("job_interval_custom"):
             awaiting.pop("job_interval_custom", None)
@@ -370,7 +378,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("❌ Invalid number.")
             return
 
-        # ---- Job draft: message text ----
+        # ---- Job draft: text ----
         if awaiting.get("job_text"):
             awaiting.pop("job_text", None)
             rt.save_state()
@@ -534,7 +542,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             await event.respond("✅ Base name updated.")
             return
 
-        # ---- Awaiting: custom name font ----
+        # ---- Awaiting: custom fonts ----
         if awaiting.get("custom_name_font"):
             awaiting.pop("custom_name_font", None)
             rt.save_state()
@@ -545,7 +553,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("✅ Custom name font saved.")
             return
 
-        # ---- Awaiting: custom clock font ----
         if awaiting.get("custom_clock_font"):
             awaiting.pop("custom_clock_font", None)
             rt.save_state()
@@ -556,7 +563,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("✅ Custom clock font saved.")
             return
 
-        # ---- Awaiting: user request diamonds ----
+        # ---- Awaiting: request diamonds ----
         user_key = f"user_reqdiamonds:{uid}"
         if awaiting.get(user_key):
             awaiting.pop(user_key, None)
@@ -615,7 +622,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit(P.login_required_text(), P.login_required_buttons())
         return
 
-    # ---- Auth start ----
+    # ---- Auth: phone login ----
     if data == "auth:start_login":
         st["step"] = "phone"
         st["phone"] = None
@@ -627,6 +634,11 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             "📱 Send your phone number with country code.\n\n"
             "Example: `+989121234567`"
         )
+        return
+
+    # ---- Auth: QR login ----
+    if data == "auth:qr_login":
+        await _handle_qr_login(rt, uid, event)
         return
 
     # ---- Navigation ----
@@ -692,13 +704,12 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "set:interval":
         st["awaiting"]["interval"] = True
         rt.save_state()
-        await edit("⏱ Send interval (1–60):",
-                   [[P._back_btn(b"nav:settings")]])
+        await edit("⏱ Send interval (1–60):", [[P._back_btn(b"nav:settings")]])
         return
     if data == "set:timezone":
         st["awaiting"]["timezone"] = True
         rt.save_state()
-        await edit("🌍 Send timezone (e.g. Europe/Berlin):",
+        await edit("🌍 Send timezone (e.g. Asia/Tehran, Europe/Berlin):",
                    [[P._back_btn(b"nav:settings")]])
         return
     if data == "set:language":
@@ -757,8 +768,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         return
 
     # ===========================================================
-    # JOB FLOW — Step 1: GROUP FIRST
-    # =========================================================
+    # JOB FLOW
+    # ===========================================================
     if data == "job:new":
         st["job_draft"] = {}
         st["awaiting"] = {}
@@ -783,23 +794,33 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "job:group:select":
         kb = P.group_selector_reply_keyboard()
         if kb is None:
+            st["awaiting"]["job_chat_id_manual"] = True
+            rt.save_state()
             await edit(
-                "⚠️ Peer selection not available on your Telethon version.",
+                "**🎯 Manual group entry**\n\n"
+                "Your Telegram client doesn't support the group picker.\n\n"
+                "Send the group's chat ID (e.g. `-1001234567890`).\n\n"
+                "**How to find it:**\n"
+                "Forward a message from the group to @userinfobot — it will show the ID.",
                 [[P._back_btn(b"nav:jobs")]],
             )
             return
         st["awaiting_peer"] = True
         rt.save_state()
-        # Send message with reply keyboard below
         try:
             await bot.send_message(event.chat_id, P.group_selector_text(), buttons=kb)
         except Exception as e:
             log_bot.warning(f"failed to send peer selector: {e}")
+            st["awaiting"]["job_chat_id_manual"] = True
+            rt.save_state()
+            await edit(
+                "**🎯 Manual group entry**\n\n"
+                "Send the group's chat ID (e.g. `-1001234567890`).",
+                [[P._back_btn(b"nav:jobs")]],
+            )
         return
 
-    # ===========================================================
-    # JOB FLOW — Step 2: INTERVAL
-    # =========================================================
+    # ---- Interval ----
     if data.startswith("job:interval:"):
         draft = st.get("job_draft", {})
         target = draft.get("target")
@@ -823,9 +844,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    P.job_duration_buttons())
         return
 
-    # ===========================================================
-    # JOB FLOW — Step 3: DURATION
-    # ===========================================================
+    # ---- Duration ----
     if data.startswith("job:duration:"):
         draft = st.get("job_draft", {})
         val = data.split(":")[2]
@@ -848,9 +867,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         )
         return
 
-    # ===========================================================
-    # JOB FLOW — Step 4: MESSAGE
-    # ===========================================================
+    # ---- Message ----
     if data == "job:text:enter":
         st["awaiting"]["job_text"] = True
         rt.save_state()
@@ -862,9 +879,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit("📎 Send a `.txt` file with the message:", [[P._back_btn(b"job:setup:back")]])
         return
 
-    # ===========================================================
-    # JOB FLOW — Step 5: CONFIRM
-    # =========================================================
+    # ---- Confirm ----
     if data == "job:confirm:start":
         draft = st.get("job_draft", {})
         interval = draft.get("interval", 0)
@@ -894,10 +909,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         return
 
     if data == "job:setup:back":
-        # step back: if we're at confirm → text step, etc.
         draft = st.get("job_draft", {})
         if draft.get("text") is not None and draft.get("duration"):
-            # back from confirm → text step
             draft.pop("text", None)
             rt.save_state()
             await edit(
@@ -922,7 +935,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             await edit(P.job_interval_text(draft.get("target")),
                        P.job_interval_buttons())
             return
-        # no draft → back to group selector
         st["job_draft"] = {}
         rt.save_state()
         recent = rt.recent_group(uid)
@@ -970,8 +982,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         new_val = not bool(n.get(key, True))
         U.set_notify(uid, key, new_val)
         await edit(P.notify_text(), P.notify_buttons()); return
-    if data == "acc:qrlogin":
-        await _handle_qr_login(rt, uid, event); return
 
 
 async def _handle_qr_login(rt: BotRuntime, uid: int, event) -> None:
