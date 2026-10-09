@@ -1,12 +1,13 @@
 """Telegram bot runtime: bot + user clients, all handlers, watchdog.
 
-Login flow uses state["step"] = "idle" | "phone" | "code" | "2fa"
-and stores phone + hash in state.
+Two roles:
+  * Owner (rt.owner_id) — full control panel
+  * Regular user         — user panel (no pairing prompt)
 
+Login flow uses state["step"] = "idle" | "phone" | "code" | "2fa".
 Phone step tries ResendCodeRequest ONCE per session (non-fatal).
 QR login uses Telethon's native client.qr_login().
-Job creation flow is a graphical step-by-step panel with reply-keyboard
-group selection.
+Job creation is a graphical step-by-step flow.
 """
 import asyncio
 import io
@@ -200,14 +201,17 @@ def _register_handlers(rt: BotRuntime) -> None:
     @_guarded(rt)
     async def _start(event):
         uid = event.sender_id
-        if uid != rt.owner_id:
-            await event.respond(
-                "Send the pairing code shown in the server logs to become owner."
-            )
-            return
-        await event.respond(P.main_panel_text(), buttons=P.main_panel_buttons())
+        try:
+            U.ensure_user(uid)
+        except Exception:
+            pass
 
-    # --- pairing ----------------------------------------------------------
+        if uid == rt.owner_id:
+            await event.respond(P.main_panel_text(), buttons=P.main_panel_buttons())
+        else:
+            await event.respond(P.user_panel_text(uid), buttons=P.user_panel_buttons(uid))
+
+    # --- pairing (only if owner is NOT set) -------------------------------
     @bot.on(events.NewMessage(pattern=r"^\d{6}$"))
     @_guarded(rt)
     async def _pairing(event):
@@ -267,21 +271,32 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- /account ---------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/account$"))
-    @_owner_only(rt)
+    @_guarded(rt)
     async def _account(event):
-        await event.respond(P.account_text(), buttons=P.account_buttons())
+        uid = event.sender_id
+        if uid == rt.owner_id:
+            await event.respond(P.account_text(), buttons=P.account_buttons())
+        else:
+            await event.respond(P.user_account_text(uid),
+                                buttons=P.user_account_buttons())
 
     # --- /request ---------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/request$"))
-    @_owner_only(rt)
+    @_guarded(rt)
     async def _request(event):
-        await event.respond(P.account_text(), buttons=P.account_buttons())
+        uid = event.sender_id
+        if uid == rt.owner_id:
+            await event.respond(P.account_text(), buttons=P.account_buttons())
+        else:
+            await event.respond(P.user_account_text(uid),
+                                buttons=P.user_account_buttons())
 
     # --- /myrequests ------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/myrequests$"))
-    @_owner_only(rt)
+    @_guarded(rt)
     async def _myreq(event):
-        items = R.for_user(rt.owner_id)[:20]
+        uid = event.sender_id
+        items = R.for_user(uid)[:20]
         if not items:
             await event.respond("No requests yet.")
             return
@@ -385,9 +400,14 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- /status ----------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/status$"))
-    @_owner_only(rt)
+    @_guarded(rt)
     async def _status(event):
-        await event.respond(P.status_text(), buttons=P.status_buttons())
+        uid = event.sender_id
+        if uid == rt.owner_id:
+            await event.respond(P.status_text(), buttons=P.status_buttons())
+        else:
+            await event.respond(P.user_account_text(uid),
+                                buttons=P.user_account_buttons())
 
     # --- /memory ----------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/memory$"))
@@ -486,12 +506,30 @@ def _register_handlers(rt: BotRuntime) -> None:
     @bot.on(events.NewMessage())
     @_guarded(rt)
     async def _text(event):
+        text = (event.raw_text or "").strip()
+
+        # === NON-OWNER user flow ===
         if event.sender_id != rt.owner_id:
-            return
-        if event.raw_text.startswith(("/", ".")):
+            awaiting = state.get("awaiting") or {}
+            user_key = f"user_reqdiamonds:{event.sender_id}"
+            if awaiting.get(user_key):
+                awaiting.pop(user_key, None)
+                persist()
+                try:
+                    amount = int(text)
+                    if not (1 <= amount <= 10000):
+                        raise ValueError
+                except Exception:
+                    await event.respond("Invalid amount. Send a number 1–10000.")
+                    return
+                req = R.create_diamond_request(event.sender_id, amount)
+                await event.respond(f"✅ Request `{req['id']}` sent to admin.")
             return
 
-        text = (event.raw_text or "").strip()
+        # === OWNER flow ===
+        if text.startswith(("/", ".")):
+            return
+
         step = state.get("step") or "idle"
         awaiting = state.get("awaiting") or {}
 
@@ -511,7 +549,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
-        # --- JOB DRAFT: interval custom ---
+        # --- JOB DRAFT: custom interval ---
         if awaiting.get("job_interval_custom"):
             awaiting.pop("job_interval_custom", None)
             persist()
@@ -532,7 +570,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Invalid number.")
             return
 
-        # --- JOB DRAFT: duration custom ---
+        # --- JOB DRAFT: custom duration ---
         if awaiting.get("job_duration_custom"):
             awaiting.pop("job_duration_custom", None)
             persist()
@@ -586,7 +624,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ Could not read file: {e}")
             return
 
-        # --- LOGIN: phone step ---
+        # --- LOGIN: phone ---
         if step == "phone":
             phone = re.sub(r"[^\d+]", "", text)
             if not phone:
@@ -599,10 +637,7 @@ def _register_handlers(rt: BotRuntime) -> None:
 
                 sent = await rt.user_client.send_code_request(phone)
                 phone_code_hash = sent.phone_code_hash
-                log_bot.info(
-                    f"send_code_request OK for {phone} "
-                    f"(type={type(sent).__name__})"
-                )
+                log_bot.info(f"send_code_request OK for {phone} (type={type(sent).__name__})")
 
                 if not state.get("_resend_tried"):
                     state["_resend_tried"] = True
@@ -616,15 +651,9 @@ def _register_handlers(rt: BotRuntime) -> None:
                     except Exception as resend_err:
                         err_name = type(resend_err).__name__
                         if "SendCodeUnavailable" in err_name:
-                            log_bot.info(
-                                "SendCodeUnavailable — all delivery options exhausted, "
-                                "using app code only"
-                            )
+                            log_bot.info("SendCodeUnavailable — app code only")
                         else:
-                            log_bot.warning(
-                                f"ResendCodeRequest failed (non-fatal): "
-                                f"{err_name}: {resend_err}"
-                            )
+                            log_bot.warning(f"ResendCodeRequest failed: {err_name}: {resend_err}")
 
                 state["step"] = "code"
                 state["phone"] = phone
@@ -652,7 +681,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ Error: `{type(e).__name__}`")
             return
 
-        # --- LOGIN: code step ---
+        # --- LOGIN: code ---
         if step == "code":
             code = re.sub(r"\D", "", text)
             await _tidy(event)
@@ -686,7 +715,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             await _finish_login(rt, event, state, persist)
             return
 
-        # --- LOGIN: 2FA step ---
+        # --- LOGIN: 2FA ---
         if step == "2fa":
             await _tidy(event)
             try:
@@ -706,7 +735,8 @@ def _register_handlers(rt: BotRuntime) -> None:
 
         # --- AWAITING: interval ---
         if awaiting.get("interval"):
-            awaiting.pop("interval", None); persist()
+            awaiting.pop("interval", None)
+            persist()
             try:
                 n = int(text)
                 if 1 <= n <= 60:
@@ -721,7 +751,8 @@ def _register_handlers(rt: BotRuntime) -> None:
 
         # --- AWAITING: timezone ---
         if awaiting.get("timezone"):
-            awaiting.pop("timezone", None); persist()
+            awaiting.pop("timezone", None)
+            persist()
             try:
                 from zoneinfo import ZoneInfo
                 ZoneInfo(text)
@@ -734,7 +765,8 @@ def _register_handlers(rt: BotRuntime) -> None:
 
         # --- AWAITING: base name ---
         if awaiting.get("base_name"):
-            awaiting.pop("base_name", None); persist()
+            awaiting.pop("base_name", None)
+            persist()
             CONFIG["base_name"] = text
             save_config(CONFIG)
             await event.respond("Base name updated.")
@@ -742,7 +774,8 @@ def _register_handlers(rt: BotRuntime) -> None:
 
         # --- AWAITING: custom name font ---
         if awaiting.get("custom_name_font"):
-            awaiting.pop("custom_name_font", None); persist()
+            awaiting.pop("custom_name_font", None)
+            persist()
             if len(text) < 26:
                 await event.respond("Need at least 26 characters (A–Z).")
             else:
@@ -753,7 +786,8 @@ def _register_handlers(rt: BotRuntime) -> None:
 
         # --- AWAITING: custom clock font ---
         if awaiting.get("custom_clock_font"):
-            awaiting.pop("custom_clock_font", None); persist()
+            awaiting.pop("custom_clock_font", None)
+            persist()
             if len(text) < 10:
                 await event.respond("Need at least 10 characters (0–9).")
             else:
@@ -762,9 +796,10 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Custom clock font saved.")
             return
 
-        # --- AWAITING: request diamonds ---
+        # --- AWAITING: request diamonds (owner) ---
         if awaiting.get("reqdiamonds"):
-            awaiting.pop("reqdiamonds", None); persist()
+            awaiting.pop("reqdiamonds", None)
+            persist()
             try:
                 amount = int(text)
             except Exception:
@@ -800,6 +835,7 @@ async def _finish_login(rt: BotRuntime, event, state: dict, persist) -> None:
 async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     bot = rt.bot_client
     state = rt._state
+    uid = event.sender_id
 
     async def edit(text: str, buttons=None):
         try:
@@ -812,7 +848,74 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             except Exception:
                 pass
 
-    # ---- navigation ----
+    # =====================================================================
+    # USER (non-owner) callbacks
+    # =====================================================================
+    if data.startswith("user:") and uid != rt.owner_id:
+        if data == "user:home":
+            await edit(P.user_panel_text(uid), P.user_panel_buttons(uid))
+            return
+        if data == "user:account":
+            await edit(P.user_account_text(uid), P.user_account_buttons())
+            return
+        if data == "user:reqdiamonds":
+            rt.awaiting[f"user_reqdiamonds:{uid}"] = True
+            rt.save_state()
+            await edit(
+                "💎 **Request diamonds**\n\n"
+                "Send the number of diamonds you want (1–10000):",
+                [[Button.inline("◀️ Back", b"user:account")]],
+            )
+            return
+        if data == "user:reqsub":
+            rows = [
+                [Button.inline("Basic — 30 days", b"user:reqsub:basic", style="primary")],
+                [Button.inline("Pro — 30 days", b"user:reqsub:pro", style="primary")],
+                [Button.inline("VIP — 30 days", b"user:reqsub:vip", style="primary")],
+                [Button.inline("◀️ Back", b"user:account")],
+            ]
+            await edit("⭐ **Request subscription**\n\nPick a plan:", rows)
+            return
+        if data.startswith("user:reqsub:"):
+            plan = data.split(":")[-1]
+            R.create_subscription_request(uid, plan)
+            await edit(
+                f"✅ Subscription request sent to admin.\n\nPlan: **{plan}**",
+                [[Button.inline("◀️ Back", b"user:account")]],
+            )
+            return
+        if data == "user:myreq":
+            items = R.for_user(uid)[:20]
+            if not items:
+                await edit(
+                    "📜 **My requests**\n\n_You have no requests._",
+                    [[Button.inline("◀️ Back", b"user:home")]],
+                )
+                return
+            lines = ["📜 **My requests**\n"]
+            for r in items:
+                lines.append(f"• `{r['id']}` — {r['type']} — {r['status']}")
+            await edit("\n".join(lines),
+                       [[Button.inline("◀️ Back", b"user:home")]])
+            return
+        if data == "user:referral":
+            stats = REF.stats(uid)
+            await edit(
+                f"🤝 **My referral code**\n\n"
+                f"`{stats['code']}`\n\n"
+                f"Share this code with friends. You both get diamonds when they join.\n\n"
+                f"**Total referrals:** {stats['count']}",
+                [[Button.inline("◀️ Back", b"user:home")]],
+            )
+            return
+        if data == "user:help":
+            await edit(P.user_help_text(), P.user_help_buttons())
+            return
+        return
+
+    # =====================================================================
+    # OWNER callbacks — navigation
+    # =====================================================================
     if data == "nav:main":
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
     if data == "nav:status":
@@ -830,67 +933,90 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "nav:help":
         await edit(P.help_text(), P.help_buttons()); return
 
-    # ---- clock on/off ----
+    # --- clock on/off ---
     if data == "clock:on":
         if not rt.user_client:
-            await _safe_answer(event, "No user session.", alert=True); return
+            await _safe_answer(event, "No user session.", alert=True)
+            return
         CONFIG["clock_on"] = True
         save_config(CONFIG)
         CLK.start_clock(rt.user_client)
-        await edit(P.main_panel_text(), P.main_panel_buttons()); return
+        await edit(P.main_panel_text(), P.main_panel_buttons())
+        return
     if data == "clock:off":
         if not rt.user_client:
-            await _safe_answer(event, "No user session.", alert=True); return
+            await _safe_answer(event, "No user session.", alert=True)
+            return
         await CLK.stop_clock(rt.user_client)
-        await edit(P.main_panel_text(), P.main_panel_buttons()); return
+        await edit(P.main_panel_text(), P.main_panel_buttons())
+        return
 
-    # ---- settings ----
+    # --- settings ---
     if data == "set:interval":
-        rt.awaiting["interval"] = True; rt.save_state()
-        await edit("Send interval (1–60):", [[Button.inline(P.t("btn_back"), b"nav:settings")]]); return
+        rt.awaiting["interval"] = True
+        rt.save_state()
+        await edit("Send interval (1–60):",
+                   [[Button.inline(P.t("btn_back"), b"nav:settings")]])
+        return
     if data == "set:timezone":
-        rt.awaiting["timezone"] = True; rt.save_state()
-        await edit("Send timezone (e.g. Europe/Berlin):", [[Button.inline(P.t("btn_back"), b"nav:settings")]]); return
+        rt.awaiting["timezone"] = True
+        rt.save_state()
+        await edit("Send timezone (e.g. Europe/Berlin):",
+                   [[Button.inline(P.t("btn_back"), b"nav:settings")]])
+        return
     if data == "set:language":
-        await edit(P.language_text(), P.language_buttons()); return
+        await edit(P.language_text(), P.language_buttons())
+        return
     if data.startswith("set:lang:"):
         lang = data.split(":")[-1]
         CONFIG["language"] = lang
         save_config(CONFIG)
-        await edit(P.language_text(), P.language_buttons()); return
+        await edit(P.language_text(), P.language_buttons())
+        return
 
-    # ---- appearance ----
+    # --- appearance ---
     if data == "app:base":
-        rt.awaiting["base_name"] = True; rt.save_state()
-        await edit("Send new base name:", [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
+        rt.awaiting["base_name"] = True
+        rt.save_state()
+        await edit("Send new base name:",
+                   [[Button.inline(P.t("btn_back"), b"nav:appearance")]])
+        return
     if data == "app:namefont":
         rows = [[Button.inline(n, f"app:namefont:{n}".encode())] for n in
                 ["normal", "italic", "bold", "script", "fraktur", "double", "sans", "sans-bold"]]
         rows.append([Button.inline(P.t("btn_back"), b"nav:appearance")])
-        await edit("Pick a name font:", rows); return
+        await edit("Pick a name font:", rows)
+        return
     if data.startswith("app:namefont:"):
         CONFIG["name_font"] = data.split(":")[-1]
         save_config(CONFIG)
-        await edit(P.appearance_text(), P.appearance_buttons()); return
+        await edit(P.appearance_text(), P.appearance_buttons())
+        return
     if data == "app:clockfont":
         from .fonts import DIGIT_FONTS
         rows = [[Button.inline(n, f"app:clockfont:{n}".encode())] for n in DIGIT_FONTS.keys()]
         rows.append([Button.inline(P.t("btn_back"), b"nav:appearance")])
-        await edit("Pick a clock font:", rows); return
+        await edit("Pick a clock font:", rows)
+        return
     if data.startswith("app:clockfont:"):
         CONFIG["clock_font"] = data.split(":")[-1]
         save_config(CONFIG)
-        await edit(P.appearance_text(), P.appearance_buttons()); return
+        await edit(P.appearance_text(), P.appearance_buttons())
+        return
     if data == "app:customname":
-        rt.awaiting["custom_name_font"] = True; rt.save_state()
+        rt.awaiting["custom_name_font"] = True
+        rt.save_state()
         await edit("Send 26 characters for A–Z:",
-                   [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
+                   [[Button.inline(P.t("btn_back"), b"nav:appearance")]])
+        return
     if data == "app:customclock":
-        rt.awaiting["custom_clock_font"] = True; rt.save_state()
+        rt.awaiting["custom_clock_font"] = True
+        rt.save_state()
         await edit("Send 10 characters for 0–9:",
-                   [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
+                   [[Button.inline(P.t("btn_back"), b"nav:appearance")]])
+        return
 
-    # ---- job creation: graphical flow ----
+    # --- job creation flow ---
     if data == "job:new":
         rt._state["job_draft"] = {}
         rt._state["awaiting"] = {}
@@ -943,19 +1069,14 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "job:text:enter":
         rt.awaiting["job_text"] = True
         rt.save_state()
-        await edit(
-            "Send the message text now:",
-            [[Button.inline("◀️ Back", b"job:setup:back")]],
-        )
+        await edit("Send the message text now:",
+                   [[Button.inline("◀️ Back", b"job:setup:back")]])
         return
-
     if data == "job:text:upload":
         rt.awaiting["job_text_file"] = True
         rt.save_state()
-        await edit(
-            "Send a `.txt` file with the message:",
-            [[Button.inline("◀️ Back", b"job:setup:back")]],
-        )
+        await edit("Send a `.txt` file with the message:",
+                   [[Button.inline("◀️ Back", b"job:setup:back")]])
         return
 
     if data == "job:confirm:start":
@@ -981,7 +1102,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                 [[Button.inline("📋 Jobs", b"nav:jobs")]],
             )
         else:
-            await edit(f"❌ {res}", [[Button.inline("◀️ Back", b"job:setup:back")]])
+            await edit(f"❌ {res}",
+                       [[Button.inline("◀️ Back", b"job:setup:back")]])
         return
 
     if data == "job:setup:back":
@@ -1003,75 +1125,94 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                 [[Button.inline("◀️ Back", b"nav:jobs")]],
             )
             return
-        await bot.send_message(
-            event.chat_id,
-            group_selection_text(),
-            buttons=kb,
-        )
+        await bot.send_message(event.chat_id, group_selection_text(), buttons=kb)
         return
 
-    # ---- jobs list / stop / templates ----
+    # --- jobs list / stop / templates ---
     if data == "job:list":
-        await edit(P.jobs_text(), P.jobs_buttons()); return
+        await edit(P.jobs_text(), P.jobs_buttons())
+        return
     if data == "job:stopall":
         n = J.stop_all()
-        await edit(f"Stopped {n} jobs.", [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
+        await edit(f"Stopped {n} jobs.",
+                   [[Button.inline(P.t("btn_back"), b"nav:jobs")]])
+        return
     if data == "job:templates":
         tpls = J.list_templates(rt.owner_id)
         if not tpls:
-            await edit("No templates.", [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
+            await edit("No templates.",
+                       [[Button.inline(P.t("btn_back"), b"nav:jobs")]])
+            return
         rows = [[Button.inline(n, f"job:tpl:{n}".encode())] for n in tpls.keys()]
         rows.append([Button.inline(P.t("btn_back"), b"nav:jobs")])
-        await edit("Templates:", rows); return
+        await edit("Templates:", rows)
+        return
     if data.startswith("job:tpl:"):
         name = data.split(":", 2)[-1]
         tpl = J.load_template(rt.owner_id, name) or ""
-        await edit(f"**{name}**\n\n{tpl}", [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
+        await edit(f"**{name}**\n\n{tpl}",
+                   [[Button.inline(P.t("btn_back"), b"nav:jobs")]])
+        return
 
-    # ---- account ----
+    # --- account ---
     if data == "acc:reqdiamonds":
-        rt.awaiting["reqdiamonds"] = True; rt.save_state()
+        rt.awaiting["reqdiamonds"] = True
+        rt.save_state()
         await edit("Send the amount of diamonds (1–10000):",
-                   [[Button.inline(P.t("btn_back"), b"nav:account")]]); return
+                   [[Button.inline(P.t("btn_back"), b"nav:account")]])
+        return
     if data == "acc:reqsub":
-        await edit(P.plan_text(), P.plan_buttons()); return
+        await edit(P.plan_text(), P.plan_buttons())
+        return
     if data.startswith("reqsub:"):
         plan = data.split(":")[-1]
         R.create_subscription_request(rt.owner_id, plan)
-        await edit("Request submitted.", [[Button.inline(P.t("btn_back"), b"nav:account")]]); return
+        await edit("Request submitted.",
+                   [[Button.inline(P.t("btn_back"), b"nav:account")]])
+        return
     if data == "acc:myreq":
         items = R.for_user(rt.owner_id)[:20]
         if not items:
-            await edit("No requests.", [[Button.inline(P.t("btn_back"), b"nav:account")]]); return
+            await edit("No requests.",
+                       [[Button.inline(P.t("btn_back"), b"nav:account")]])
+            return
         txt = "\n".join(f"• `{r['id']}` — {r['type']} — {r['status']}" for r in items)
-        await edit(txt, [[Button.inline(P.t("btn_back"), b"nav:account")]]); return
+        await edit(txt, [[Button.inline(P.t("btn_back"), b"nav:account")]])
+        return
     if data == "acc:referral":
         stats = REF.stats(rt.owner_id)
         await edit(P.t("your_referral", code=stats["code"]),
-                   [[Button.inline(P.t("btn_back"), b"nav:account")]]); return
+                   [[Button.inline(P.t("btn_back"), b"nav:account")]])
+        return
     if data == "acc:notify":
-        await edit(P.notify_text(), P.notify_buttons()); return
+        await edit(P.notify_text(), P.notify_buttons())
+        return
     if data.startswith("notify:"):
         key = data.split(":", 1)[1]
         u = U.get_user(rt.owner_id) or {}
         n = (u.get("notify") or {})
         new_val = not bool(n.get(key, True))
         U.set_notify(rt.owner_id, key, new_val)
-        await edit(P.notify_text(), P.notify_buttons()); return
+        await edit(P.notify_text(), P.notify_buttons())
+        return
 
-    # ---- QR login ----
+    # --- QR login ---
     if data == "acc:qrlogin":
-        await _handle_qr_login(rt, event); return
+        await _handle_qr_login(rt, event)
+        return
 
-    # ---- memory ----
+    # --- memory ---
     if data == "mem:view":
         from .store import memory_store
         txt = "```\n" + (str(memory_store.all())[:3500]) + "\n```"
-        await edit(txt, [[Button.inline(P.t("btn_back"), b"nav:memory")]]); return
+        await edit(txt, [[Button.inline(P.t("btn_back"), b"nav:memory")]])
+        return
     if data == "mem:clear":
         from .store import memory_store
         memory_store.replace({})
-        await edit("Memory cleared.", [[Button.inline(P.t("btn_back"), b"nav:memory")]]); return
+        await edit("Memory cleared.",
+                   [[Button.inline(P.t("btn_back"), b"nav:memory")]])
+        return
     if data == "mem:clearstate":
         state["step"] = "idle"
         state["phone"] = None
@@ -1081,12 +1222,15 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         state["_resend_tried"] = False
         state["job_draft"] = {}
         rt.save_state()
-        await edit("State cleared.", [[Button.inline(P.t("btn_back"), b"nav:memory")]]); return
+        await edit("State cleared.",
+                   [[Button.inline(P.t("btn_back"), b"nav:memory")]])
+        return
     if data == "mem:dump":
         from .store import memory_store, user_state_store
         payload = {"memory": memory_store.all(), "state": user_state_store.all()}
         txt = "```json\n" + str(payload)[:3500] + "\n```"
-        await edit(txt, [[Button.inline(P.t("btn_back"), b"nav:memory")]]); return
+        await edit(txt, [[Button.inline(P.t("btn_back"), b"nav:memory")]])
+        return
 
 
 # ===========================================================================
