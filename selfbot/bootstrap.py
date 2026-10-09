@@ -1,4 +1,4 @@
-"""Boot and shutdown orchestration."""
+"""Boot and shutdown orchestration for the whole app."""
 import asyncio
 import threading
 from pathlib import Path
@@ -58,27 +58,10 @@ def _seed_owner() -> None:
 async def _set_bot_commands(bot) -> None:
     try:
         from telethon.tl.functions.bots import SetBotCommandsRequest
+        from telethon.tl.types import BotCommand, BotCommandScopeDefault
     except ImportError as e:
-        log_bot.warning(f"SetBotCommandsRequest not available: {e}")
+        log_bot.warning(f"SetBotCommands types not available: {e}")
         return
-
-    try:
-        from telethon.tl.types import BotCommand
-    except ImportError:
-        try:
-            from telethon.tl.types.bots import BotCommand  # type: ignore
-        except ImportError as e:
-            log_bot.warning(f"BotCommand not available: {e}")
-            return
-
-    BotCommandScopeDefault = None
-    try:
-        from telethon.tl.types import BotCommandScopeDefault  # type: ignore
-    except ImportError:
-        try:
-            from telethon.tl.types.bots import BotCommandScopeDefault  # type: ignore
-        except ImportError:
-            pass
 
     commands = [
         BotCommand(command="start",  description="Open the panel"),
@@ -87,26 +70,15 @@ async def _set_bot_commands(bot) -> None:
         BotCommand(command="logout", description="Delete session"),
     ]
 
-    scopes = []
-    if BotCommandScopeDefault:
-        try:
-            scopes.append(BotCommandScopeDefault())
-        except Exception:
-            pass
-
-    if not scopes:
-        log_bot.warning("no BotCommandScope — skipping command registration")
-        return
-
-    for scope in scopes:
-        try:
-            await bot(SetBotCommandsRequest(
-                scope=scope, lang_code="", commands=commands,
-            ))
-        except Exception as e:
-            log_bot.warning(f"could not set commands: {e}")
-
-    log_bot.info(f"registered {len(commands)} commands: start, help, login, logout")
+    try:
+        await bot(SetBotCommandsRequest(
+            scope=BotCommandScopeDefault(),
+            lang_code="",
+            commands=commands,
+        ))
+        log_bot.info(f"registered {len(commands)} commands")
+    except Exception as e:
+        log_bot.warning(f"could not set commands: {e}")
 
 
 async def _make_bot_client(runtime):
@@ -117,8 +89,6 @@ async def _make_bot_client(runtime):
 
     session_path = str(DB_PATH / "bot.session")
     proxy_tuple = _build_telethon_proxy()
-    if proxy_tuple:
-        log_bot.info(f"Telethon using proxy {proxy_tuple}")
 
     try:
         client = TelegramClient(session_path, api_id, api_hash, proxy=proxy_tuple)
@@ -155,7 +125,14 @@ async def make_user_client_for_login(user_id: int = None):
 
 
 async def _load_user_sessions(runtime) -> None:
-    for uid_str in list((users_store.all() or {}).keys()):
+    try:
+        from . import db
+        rows = db.all_users()
+    except Exception as e:
+        log_bot.warning(f"could not list users: {e}")
+        return
+
+    for uid_str in list(rows.keys()):
         if not str(uid_str).isdigit():
             continue
         uid = int(uid_str)
@@ -167,7 +144,7 @@ async def _load_user_sessions(runtime) -> None:
             if await client.is_user_authorized():
                 runtime.user_clients[uid] = client
                 log_bot.info(f"loaded user session uid={uid}")
-                u = users_store.get(str(uid)) or {}
+                u = db.get_user(uid) or {}
                 if u.get("clock_on"):
                     try:
                         from .clock import start_clock
@@ -201,6 +178,23 @@ def boot_all(runtime) -> None:
 async def _boot_async(runtime) -> None:
     log.info("=== SELF BOT booting ===")
 
+    # ---- 1. Init DB BEFORE anything else ----
+    try:
+        from . import db
+        db.init_db()
+        log.info("database initialized")
+    except Exception as e:
+        log.error(f"DB init failed: {e}")
+        raise
+
+    # ---- 2. Migrate legacy JSON stores (once) ----
+    try:
+        from . import db_migrate
+        db_migrate.migrate_if_needed()
+    except Exception as e:
+        log.warning(f"migration skipped: {e}")
+
+    # ---- 3. Verify Xray proxy ----
     try:
         proxy_tuple = _build_telethon_proxy()
         if proxy_tuple:
@@ -221,10 +215,15 @@ async def _boot_async(runtime) -> None:
     except Exception as e:
         log.warning(f"proxy check failed: {e}")
 
+    # ---- 4. Seed owner ----
     log.info("seeding owner…")
-    _seed_owner()
-    log.info("owner seeded")
+    try:
+        _seed_owner()
+        log.info("owner seeded")
+    except Exception as e:
+        log.error(f"seed owner failed: {e}")
 
+    # ---- 5. Bot client ----
     log.info("connecting bot client…")
     try:
         runtime.bot_client = await _make_bot_client(runtime)
@@ -243,15 +242,28 @@ async def _boot_async(runtime) -> None:
     log.info(f"║  PAIRING CODE:  {code}                    ║")
     log.info("╚════════════════════════════════════════════╝")
 
+    # ---- 6. Load user sessions ----
     log.info("loading user sessions…")
-    await _load_user_sessions(runtime)
+    try:
+        await _load_user_sessions(runtime)
+    except Exception as e:
+        log.warning(f"user session load failed: {e}")
 
+    # ---- 7. Register handlers ----
     log.info("registering bot handlers…")
-    from .bot_handlers import _register_handlers, start_watchdog
-    _register_handlers(runtime)
-    await start_watchdog(runtime)
+    try:
+        from .bot_handlers import _register_handlers, start_watchdog
+        _register_handlers(runtime)
+        await start_watchdog(runtime)
+    except Exception as e:
+        log.error(f"handler registration failed: {e}")
 
-    _start_scheduler(runtime)
+    # ---- 8. Scheduler ----
+    try:
+        _start_scheduler(runtime)
+    except Exception as e:
+        log.warning(f"scheduler failed: {e}")
+
     log.info("=== SELF BOT ready ===")
 
 
