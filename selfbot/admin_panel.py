@@ -1,5 +1,4 @@
-"""Flask admin panel: dark theme, Chart.js, users, requests, transactions,
-shop, audit, backups, broadcast, 2FA, proxy configs."""
+"""Flask admin panel — modern dark glassmorphism theme."""
 import functools
 import io
 import json
@@ -45,7 +44,7 @@ except ImportError:
 
 
 # ===========================================================================
-# Password management
+# Password
 # ===========================================================================
 def _load_or_create_password() -> str:
     env_pw = os.environ.get("ADMIN_PASSWORD")
@@ -67,7 +66,7 @@ ADMIN_PASSWORD = _load_or_create_password()
 
 
 # ===========================================================================
-# Auth decorators
+# Auth helpers
 # ===========================================================================
 def _login_required(fn):
     @functools.wraps(fn)
@@ -103,191 +102,502 @@ def _csrf_check() -> None:
 
 
 # ===========================================================================
-# HTML templates
+# HTML — Base layout + CSS
 # ===========================================================================
 BASE_TEMPLATE = """
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>{{ title }} — SELF BOT Admin</title>
+<title>{{ title }} · SELF BOT Admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 :root {
-  --bg:#0b0f1a; --card:#131a2b; --card2:#1a2338; --border:#243049;
-  --text:#e5ecf7; --muted:#8fa0bd; --blue:#4f7dff; --purple:#8b5cf6;
-  --green:#22c55e; --red:#ef4444; --yellow:#f59e0b;
+  --bg-0: #070912;
+  --bg-1: #0c101e;
+  --bg-2: #121828;
+  --bg-3: #1a2135;
+  --stroke: rgba(255,255,255,.07);
+  --stroke-strong: rgba(255,255,255,.14);
+  --text: #eef2ff;
+  --text-dim: #8b96b8;
+  --text-mute: #5a6486;
+  --indigo: #6366f1;
+  --violet: #a855f7;
+  --cyan: #22d3ee;
+  --emerald: #10b981;
+  --amber: #f59e0b;
+  --rose: #f43f5e;
+  --grad: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+  --grad-soft: linear-gradient(135deg, rgba(99,102,241,.15) 0%, rgba(168,85,247,.08) 100%);
 }
-*{box-sizing:border-box;}
-body{margin:0;background:var(--bg);color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
-a{color:var(--blue);text-decoration:none;}
-a:hover{text-decoration:underline;}
-.nav{display:flex;align-items:center;gap:18px;padding:14px 26px;
-  background:linear-gradient(90deg,#0b0f1a,#131a2b);
-  border-bottom:1px solid var(--border);flex-wrap:wrap;}
-.nav .logo{font-weight:700;font-size:18px;
-  background:linear-gradient(90deg,var(--blue),var(--purple));
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;}
-.nav a{color:var(--muted);font-size:14px;padding:6px 10px;border-radius:8px;}
-.nav a:hover{color:var(--text);background:var(--card2);text-decoration:none;}
-.nav a.active{color:var(--text);background:var(--card2);}
-.container{max-width:1220px;margin:26px auto;padding:0 20px;}
-h1{margin:0 0 18px;font-size:24px;}
-h2{margin:0 0 12px;font-size:18px;}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
-  gap:16px;margin-bottom:22px;}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;
-  padding:18px;transition:.2s;box-shadow:0 6px 24px rgba(0,0,0,.25);}
-.card:hover{transform:translateY(-2px);border-color:#35507f;}
-.card .label{color:var(--muted);font-size:12px;text-transform:uppercase;
-  letter-spacing:.6px;}
-.card .value{font-size:28px;font-weight:700;margin-top:8px;
-  background:linear-gradient(90deg,var(--blue),var(--purple));
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;}
-table{width:100%;border-collapse:collapse;background:var(--card);
-  border-radius:12px;overflow:hidden;border:1px solid var(--border);}
-th,td{padding:10px 12px;text-align:left;font-size:14px;}
-th{background:var(--card2);color:var(--muted);font-weight:600;font-size:12px;
-  text-transform:uppercase;letter-spacing:.5px;}
-tr+tr td{border-top:1px solid var(--border);}
-.pill{display:inline-block;padding:3px 10px;border-radius:999px;
-  font-size:11px;font-weight:600;letter-spacing:.3px;}
-.pill.pending{background:rgba(245,158,11,.15);color:var(--yellow);}
-.pill.approved,.pill.ok{background:rgba(34,197,94,.15);color:var(--green);}
-.pill.rejected,.pill.bad{background:rgba(239,68,68,.15);color:var(--red);}
-.pill.info{background:rgba(79,125,255,.15);color:var(--blue);}
-.pill.vip{background:rgba(139,92,246,.15);color:var(--purple);}
-button,.btn{background:linear-gradient(90deg,var(--blue),var(--purple));
-  border:none;color:white;padding:9px 15px;border-radius:9px;cursor:pointer;
-  font-size:13px;font-weight:600;transition:.2s;display:inline-block;}
-button:hover,.btn:hover{filter:brightness(1.1);text-decoration:none;}
-button.ghost{background:transparent;border:1px solid var(--border);color:var(--text);}
-button.danger{background:linear-gradient(90deg,#dc2626,#ef4444);}
-button.success{background:linear-gradient(90deg,#16a34a,#22c55e);}
-input,select,textarea{background:var(--card2);color:var(--text);
-  border:1px solid var(--border);border-radius:9px;padding:9px 11px;
-  font-size:14px;width:100%;max-width:320px;}
-label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px;}
-.row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;}
-.flash{padding:10px 14px;background:rgba(34,197,94,.12);
-  border:1px solid rgba(34,197,94,.3);border-radius:10px;margin-bottom:16px;
-  color:#86efac;}
-.flash.err{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.3);
-  color:#fca5a5;}
-.chart-card{padding:18px;}
-.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
-@media (max-width:900px){.grid-2{grid-template-columns:1fr;}}
-.login-box{max-width:380px;margin:100px auto;padding:30px;
-  background:var(--card);border-radius:16px;border:1px solid var(--border);}
-.muted{color:var(--muted);font-size:13px;}
-.mono{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:12px;}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-0);
+  color: var(--text);
+  line-height: 1.55;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(1200px 800px at 10% -10%, rgba(99,102,241,.18), transparent 60%),
+    radial-gradient(1000px 700px at 100% 0%, rgba(168,85,247,.12), transparent 55%),
+    radial-gradient(900px 600px at 50% 100%, rgba(34,211,238,.06), transparent 60%);
+  background-attachment: fixed;
+}
+a { color: var(--indigo); text-decoration: none; transition: color .15s; }
+a:hover { color: var(--cyan); }
+
+/* ---------- Layout ---------- */
+.layout { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .side { display: none; } }
+
+/* ---------- Sidebar ---------- */
+.side {
+  background: rgba(12,16,30,.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid var(--stroke);
+  padding: 24px 16px;
+  position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column;
+}
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px 24px;
+  font-weight: 800; font-size: 18px;
+  letter-spacing: -.02em;
+}
+.brand-mark {
+  width: 34px; height: 34px; border-radius: 10px;
+  background: var(--grad);
+  display: grid; place-items: center;
+  font-size: 16px;
+  box-shadow: 0 8px 24px rgba(99,102,241,.4);
+}
+.brand-text {
+  background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.nav-section { color: var(--text-mute); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .14em; padding: 18px 12px 8px; font-weight: 700; }
+.nav-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 10px;
+  color: var(--text-dim); font-size: 13.5px; font-weight: 500;
+  transition: all .15s;
+}
+.nav-item:hover { background: rgba(255,255,255,.04); color: var(--text); }
+.nav-item.active {
+  background: var(--grad-soft);
+  color: var(--text);
+  border: 1px solid rgba(99,102,241,.25);
+}
+.nav-item .ico { width: 18px; text-align: center; font-size: 14px; }
+.side-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--stroke); }
+.user-chip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 10px;
+  background: rgba(255,255,255,.03);
+  font-size: 12px; color: var(--text-dim);
+}
+
+/* ---------- Main ---------- */
+.main { padding: 32px 40px 60px; max-width: 1440px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between;
+  margin-bottom: 28px; gap: 20px; flex-wrap: wrap; }
+.page-title { font-size: 26px; font-weight: 800; letter-spacing: -.03em; }
+.page-sub { color: var(--text-dim); font-size: 14px; margin-top: 4px; }
+.crumb { color: var(--text-mute); font-size: 12px; text-transform: uppercase;
+  letter-spacing: .12em; font-weight: 700; margin-bottom: 6px; }
+
+/* ---------- Cards / stats ---------- */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px; margin-bottom: 24px; }
+.stat {
+  position: relative; overflow: hidden;
+  background: linear-gradient(180deg, rgba(18,24,40,.85), rgba(12,16,30,.85));
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  padding: 20px;
+  transition: transform .2s, border-color .2s;
+}
+.stat:hover { transform: translateY(-2px); border-color: var(--stroke-strong); }
+.stat::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(400px 100px at 100% 0%, rgba(99,102,241,.14), transparent 60%);
+  pointer-events: none;
+}
+.stat .k { display: flex; align-items: center; gap: 8px;
+  color: var(--text-dim); font-size: 11.5px; font-weight: 600;
+  letter-spacing: .08em; text-transform: uppercase; }
+.stat .v { font-size: 30px; font-weight: 800; margin-top: 12px;
+  letter-spacing: -.03em; }
+.stat.indigo .v { color: #c7d2fe; }
+.stat.violet .v { color: #e9d5ff; }
+.stat.emerald .v { color: #a7f3d0; }
+.stat.amber .v { color: #fde68a; }
+.stat.rose .v { color: #fecdd3; }
+.stat .v .unit { font-size: 14px; color: var(--text-mute); font-weight: 600; margin-left: 4px; }
+
+.card {
+  background: rgba(18,24,40,.65);
+  border: 1px solid var(--stroke);
+  border-radius: 18px;
+  padding: 22px;
+  backdrop-filter: blur(12px);
+  margin-bottom: 20px;
+}
+.card-head { display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
+.card h2 { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.card h2 .sub { color: var(--text-mute); font-weight: 500; font-size: 12.5px; margin-left: 8px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+@media (max-width: 1000px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* ---------- Tables ---------- */
+.table-wrap { overflow-x: auto; border-radius: 14px; border: 1px solid var(--stroke); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+thead th {
+  background: rgba(255,255,255,.025);
+  color: var(--text-mute); text-align: left;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
+  font-weight: 700; padding: 12px 16px;
+  border-bottom: 1px solid var(--stroke);
+}
+tbody td { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.03); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: rgba(99,102,241,.04); }
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; }
+.muted { color: var(--text-dim); font-size: 13px; }
+.tiny { font-size: 11.5px; }
+
+/* ---------- Badges ---------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: .03em;
+  border: 1px solid transparent;
+}
+.badge.ok      { background: rgba(16,185,129,.12); color: #6ee7b7; border-color: rgba(16,185,129,.25); }
+.badge.pending { background: rgba(245,158,11,.12); color: #fcd34d; border-color: rgba(245,158,11,.25); }
+.badge.bad     { background: rgba(244,63,94,.12); color: #fda4af; border-color: rgba(244,63,94,.25); }
+.badge.info    { background: rgba(99,102,241,.12); color: #a5b4fc; border-color: rgba(99,102,241,.25); }
+.badge.vip     { background: rgba(168,85,247,.14); color: #d8b4fe; border-color: rgba(168,85,247,.3); }
+.badge.free    { background: rgba(148,163,184,.1); color: #cbd5e1; border-color: rgba(148,163,184,.2); }
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px;
+  padding: 9px 16px; border-radius: 10px;
+  border: 1px solid var(--stroke-strong);
+  background: rgba(255,255,255,.04);
+  color: var(--text); font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+  font-family: inherit;
+}
+.btn:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.25); }
+.btn.primary {
+  background: var(--grad); border-color: transparent;
+  box-shadow: 0 8px 24px rgba(99,102,241,.35);
+}
+.btn.primary:hover { box-shadow: 0 10px 30px rgba(99,102,241,.5); transform: translateY(-1px); }
+.btn.success { background: linear-gradient(135deg, #10b981, #059669); border-color: transparent; }
+.btn.danger  { background: linear-gradient(135deg, #f43f5e, #dc2626); border-color: transparent; }
+.btn.ghost   { background: transparent; }
+.btn.sm      { padding: 6px 12px; font-size: 12px; }
+.btn.icon    { width: 32px; height: 32px; padding: 0; border-radius: 8px; }
+
+/* ---------- Inputs ---------- */
+input, select, textarea {
+  width: 100%;
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-size: 13.5px;
+  font-family: inherit;
+  transition: border-color .15s, background .15s;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: rgba(99,102,241,.6);
+  background: rgba(99,102,241,.05);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.12);
+}
+label { display: block; font-size: 12px; color: var(--text-dim);
+  margin: 12px 0 6px; font-weight: 600; letter-spacing: .02em; }
+.field-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.field-row > * { flex: 1; min-width: 140px; }
+
+/* ---------- Flash ---------- */
+.flash {
+  padding: 12px 18px; border-radius: 12px; margin-bottom: 18px;
+  font-size: 13.5px; font-weight: 500;
+  background: rgba(16,185,129,.1);
+  border: 1px solid rgba(16,185,129,.3);
+  color: #a7f3d0;
+  display: flex; align-items: center; gap: 10px;
+}
+.flash.err { background: rgba(244,63,94,.1); border-color: rgba(244,63,94,.3); color: #fda4af; }
+
+/* ---------- Login ---------- */
+.login-page {
+  min-height: 100vh; display: grid; place-items: center; padding: 40px 20px;
+}
+.login-card {
+  width: 100%; max-width: 400px;
+  padding: 40px 36px;
+  background: rgba(18,24,40,.7);
+  backdrop-filter: blur(24px);
+  border: 1px solid var(--stroke);
+  border-radius: 24px;
+  box-shadow: 0 40px 80px rgba(0,0,0,.5);
+}
+.login-logo {
+  width: 56px; height: 56px; margin: 0 auto 24px;
+  border-radius: 16px; background: var(--grad);
+  display: grid; place-items: center;
+  font-size: 26px;
+  box-shadow: 0 16px 40px rgba(99,102,241,.45);
+}
+.login-card h1 { font-size: 22px; text-align: center; margin-bottom: 6px;
+  letter-spacing: -.02em; }
+.login-card p.sub { text-align: center; color: var(--text-dim);
+  font-size: 13.5px; margin-bottom: 28px; }
+
+/* ---------- Charts ---------- */
+.chart-box { height: 220px; position: relative; }
+
+/* ---------- Misc ---------- */
+.empty { text-align: center; padding: 40px 20px; color: var(--text-mute); font-size: 13.5px; }
+.mt-3 { margin-top: 16px; }
+.mt-4 { margin-top: 24px; }
+.flex { display: flex; align-items: center; gap: 10px; }
+.flex-wrap { flex-wrap: wrap; }
+.spacer { flex: 1; }
+code { font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+  background: rgba(255,255,255,.05); padding: 2px 8px; border-radius: 6px; }
 </style>
 </head>
 <body>
+
 {% if session.get('admin') %}
-<div class="nav">
-  <div class="logo">◆ SELF BOT</div>
-  <a href="{{ url_for('dashboard') }}" class="{{ 'active' if page=='dashboard' else '' }}">Dashboard</a>
-  <a href="{{ url_for('users_page') }}" class="{{ 'active' if page=='users' else '' }}">Users</a>
-  <a href="{{ url_for('requests_page') }}" class="{{ 'active' if page=='requests' else '' }}">Requests</a>
-  <a href="{{ url_for('transactions_page') }}" class="{{ 'active' if page=='tx' else '' }}">Transactions</a>
-  <a href="{{ url_for('shop_page') }}" class="{{ 'active' if page=='shop' else '' }}">Shop</a>
-  <a href="{{ url_for('audit_page') }}" class="{{ 'active' if page=='audit' else '' }}">Audit</a>
-  <a href="{{ url_for('proxy_page') }}" class="{{ 'active' if page=='proxy' else '' }}">Proxy</a>
-  <a href="{{ url_for('backups_page') }}" class="{{ 'active' if page=='backups' else '' }}">Backups</a>
-  <a href="{{ url_for('broadcast_page') }}" class="{{ 'active' if page=='broadcast' else '' }}">Broadcast</a>
-  <a href="{{ url_for('settings_page') }}" class="{{ 'active' if page=='settings' else '' }}">Settings</a>
-  <span style="flex:1"></span>
-  <a href="{{ url_for('logout') }}">Logout</a>
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-mark">◆</div>
+      <div class="brand-text">SELF BOT</div>
+    </div>
+    <div class="nav-section">Main</div>
+    <a href="{{ url_for('dashboard') }}" class="nav-item {{ 'active' if page=='dashboard' else '' }}">
+      <span class="ico">▦</span> Dashboard
+    </a>
+    <a href="{{ url_for('users_page') }}" class="nav-item {{ 'active' if page=='users' else '' }}">
+      <span class="ico">◉</span> Users
+    </a>
+    <a href="{{ url_for('requests_page') }}" class="nav-item {{ 'active' if page=='requests' else '' }}">
+      <span class="ico">✉</span> Requests
+    </a>
+    <a href="{{ url_for('transactions_page') }}" class="nav-item {{ 'active' if page=='tx' else '' }}">
+      <span class="ico">⇄</span> Transactions
+    </a>
+    <div class="nav-section">System</div>
+    <a href="{{ url_for('shop_page') }}" class="nav-item {{ 'active' if page=='shop' else '' }}">
+      <span class="ico">◈</span> Shop
+    </a>
+    <a href="{{ url_for('proxy_page') }}" class="nav-item {{ 'active' if page=='proxy' else '' }}">
+      <span class="ico">⇆</span> Proxy
+    </a>
+    <a href="{{ url_for('audit_page') }}" class="nav-item {{ 'active' if page=='audit' else '' }}">
+      <span class="ico">◷</span> Audit
+    </a>
+    <a href="{{ url_for('backups_page') }}" class="nav-item {{ 'active' if page=='backups' else '' }}">
+      <span class="ico">◱</span> Backups
+    </a>
+    <a href="{{ url_for('broadcast_page') }}" class="nav-item {{ 'active' if page=='broadcast' else '' }}">
+      <span class="ico">◬</span> Broadcast
+    </a>
+    <a href="{{ url_for('settings_page') }}" class="nav-item {{ 'active' if page=='settings' else '' }}">
+      <span class="ico">⚙</span> Settings
+    </a>
+    <div class="side-footer">
+      <a href="{{ url_for('logout') }}" class="nav-item">
+        <span class="ico">⇤</span> Sign out
+      </a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in msgs %}
+        <div class="flash {{ 'err' if cat=='error' else '' }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+    {{ body|safe }}
+  </main>
 </div>
-{% endif %}
-<div class="container">
-{% with msgs = get_flashed_messages(with_categories=true) %}
-  {% for cat, msg in msgs %}
-    <div class="flash {{ 'err' if cat=='error' else '' }}">{{ msg }}</div>
-  {% endfor %}
-{% endwith %}
+{% else %}
 {{ body|safe }}
-</div>
+{% endif %}
+
 </body>
 </html>
 """
 
 
+# ===========================================================================
+# Login template
+# ===========================================================================
 LOGIN_TEMPLATE = """
-<div class="login-box">
-  <h1 style="text-align:center">SELF BOT Admin</h1>
-  <form method="post" action="{{ url_for('login_post') }}">
+<div class="login-page">
+  <form class="login-card" method="post" action="{{ url_for('login_post') }}">
+    <div class="login-logo">◆</div>
+    <h1>Welcome back</h1>
+    <p class="sub">Sign in to SELF BOT admin</p>
+
     <input type="hidden" name="csrf" value="{{ csrf }}">
+
     <label>Password</label>
-    <input type="password" name="password" autofocus>
+    <input type="password" name="password" placeholder="••••••••••••" autofocus required>
+
     {% if totp_enabled %}
     <label>2FA code</label>
-    <input type="text" name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="6">
+    <input type="text" name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456">
     {% endif %}
-    <div style="height:14px"></div>
-    <button style="width:100%">Sign in</button>
+
+    <div style="height:18px"></div>
+    <button type="submit" class="btn primary" style="width:100%">Sign in →</button>
   </form>
 </div>
 """
 
 
+# ===========================================================================
+# Dashboard
+# ===========================================================================
 DASHBOARD_TEMPLATE = """
-<h1>Dashboard</h1>
-<div class="cards">
-  <div class="card"><div class="label">Total users</div><div class="value">{{ users_total }}</div></div>
-  <div class="card"><div class="label">Active 24h</div><div class="value">{{ users_active }}</div></div>
-  <div class="card"><div class="label">New 7d</div><div class="value">{{ users_new }}</div></div>
-  <div class="card"><div class="label">Diamonds in circulation</div><div class="value">{{ diamonds }}</div></div>
-  <div class="card"><div class="label">Granted (all time)</div><div class="value">{{ granted }}</div></div>
-  <div class="card"><div class="label">Spent (all time)</div><div class="value">{{ spent }}</div></div>
+<div class="page-head">
+  <div>
+    <div class="crumb">Overview</div>
+    <div class="page-title">Dashboard</div>
+    <div class="page-sub">Live snapshot of your bot economy</div>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat indigo">
+    <div class="k">◆ Total users</div>
+    <div class="v">{{ users_total }}</div>
+  </div>
+  <div class="stat emerald">
+    <div class="k">◉ Active 24h</div>
+    <div class="v">{{ users_active }}</div>
+  </div>
+  <div class="stat cyan" style="--x:0">
+    <div class="k">✚ New 7 days</div>
+    <div class="v">{{ users_new }}</div>
+  </div>
+  <div class="stat violet">
+    <div class="k">◆ Diamonds in circulation</div>
+    <div class="v">{{ diamonds }}</div>
+  </div>
+  <div class="stat emerald">
+    <div class="k">↑ Granted (all time)</div>
+    <div class="v">{{ granted }}</div>
+  </div>
+  <div class="stat rose">
+    <div class="k">↓ Spent (all time)</div>
+    <div class="v">{{ spent }}</div>
+  </div>
 </div>
 
 <div class="grid-2">
-  <div class="card chart-card">
-    <h2>Diamond consumption (last 24h)</h2>
-    <canvas id="diamondChart" height="140"></canvas>
+  <div class="card">
+    <div class="card-head">
+      <h2>◆ Diamond consumption <span class="sub">last 24h</span></h2>
+    </div>
+    <div class="chart-box"><canvas id="diamondChart"></canvas></div>
   </div>
-  <div class="card chart-card">
-    <h2>Subscription distribution</h2>
-    <canvas id="subChart" height="140"></canvas>
+  <div class="card">
+    <div class="card-head">
+      <h2>◆ Subscription distribution</h2>
+    </div>
+    <div class="chart-box"><canvas id="subChart"></canvas></div>
   </div>
 </div>
 
-<div class="grid-2" style="margin-top:18px">
-  <div class="card chart-card">
-    <h2>Request approval rate (last 14 days)</h2>
-    <canvas id="approvalChart" height="140"></canvas>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head">
+      <h2>◆ Request approval rate <span class="sub">last 14 days</span></h2>
+    </div>
+    <div class="chart-box"><canvas id="approvalChart"></canvas></div>
   </div>
-  <div class="card chart-card">
-    <h2>Top spenders</h2>
-    <table>
-      <tr><th>#</th><th>User</th><th>Spent</th></tr>
-      {% for s in top_spenders %}
-      <tr><td>{{ loop.index }}</td><td>#{{ s.user_id }}</td><td>{{ s.spent }} 💎</td></tr>
-      {% endfor %}
-    </table>
+  <div class="card">
+    <div class="card-head">
+      <h2>◆ Top spenders</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>User</th><th style="text-align:right">Spent</th></tr></thead>
+        <tbody>
+        {% for s in top_spenders %}
+        <tr>
+          <td class="mono">{{ loop.index }}</td>
+          <td><a href="{{ url_for('user_detail', uid=s.user_id) }}">#{{ s.user_id }}</a></td>
+          <td style="text-align:right"><span class="badge info">{{ s.spent }} ◆</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="empty">No spenders yet</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 
 <script>
+Chart.defaults.color = '#8b96b8';
+Chart.defaults.font.family = 'Inter, sans-serif';
+Chart.defaults.font.size = 11;
+
 const diamondData = {{ diamond_series|safe }};
 new Chart(document.getElementById('diamondChart'), {
   type: 'line',
   data: {
     labels: diamondData.map(d => d.hour.slice(11, 16)),
     datasets: [{
-      label: 'Diamonds spent',
+      label: 'Spent',
       data: diamondData.map(d => d.spent),
-      borderColor: '#4f7dff',
-      backgroundColor: 'rgba(79,125,255,.15)',
-      fill: true, tension: .35, pointRadius: 3,
+      borderColor: '#818cf8',
+      backgroundColor: (ctx) => {
+        const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 220);
+        g.addColorStop(0, 'rgba(129,140,248,.35)');
+        g.addColorStop(1, 'rgba(129,140,248,0)');
+        return g;
+      },
+      fill: true, tension: .4, pointRadius: 0, pointHoverRadius: 5,
+      borderWidth: 2,
     }]
   },
-  options: { plugins: { legend: { display: false } },
-    scales: { x: { ticks: { color: '#8fa0bd' } }, y: { ticks: { color: '#8fa0bd' } } } }
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: 'rgba(255,255,255,.04)' }, border: { display: false } },
+      y: { grid: { color: 'rgba(255,255,255,.04)' }, border: { display: false }, beginAtZero: true }
+    }
+  }
 });
 
 const subData = {{ sub_dist|safe }};
@@ -297,10 +607,18 @@ new Chart(document.getElementById('subChart'), {
     labels: Object.keys(subData),
     datasets: [{
       data: Object.values(subData),
-      backgroundColor: ['#8fa0bd','#4f7dff','#8b5cf6','#22c55e'],
+      backgroundColor: ['#64748b','#6366f1','#a855f7','#f59e0b'],
+      borderWidth: 0,
+      hoverOffset: 8,
     }]
   },
-  options: { plugins: { legend: { labels: { color: '#e5ecf7' } } } }
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    cutout: '70%',
+    plugins: {
+      legend: { position: 'bottom', labels: { padding: 16, boxWidth: 12, boxHeight: 12 } }
+    }
+  }
 });
 
 const approvalData = {{ approval_series|safe }};
@@ -310,396 +628,651 @@ new Chart(document.getElementById('approvalChart'), {
     labels: approvalData.map(d => d.date.slice(5)),
     datasets: [
       { label: 'Approved', data: approvalData.map(d => d.approved),
-        backgroundColor: '#22c55e' },
+        backgroundColor: '#10b981', borderRadius: 6, barThickness: 12 },
       { label: 'Rejected', data: approvalData.map(d => d.rejected),
-        backgroundColor: '#ef4444' },
+        backgroundColor: '#f43f5e', borderRadius: 6, barThickness: 12 },
     ]
   },
-  options: { plugins: { legend: { labels: { color: '#e5ecf7' } } },
-    scales: { x: { ticks: { color: '#8fa0bd' } }, y: { ticks: { color: '#8fa0bd' } } } }
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { position: 'bottom', labels: { padding: 16, boxWidth: 12, boxHeight: 12 } } },
+    scales: {
+      x: { stacked: true, grid: { display: false }, border: { display: false } },
+      y: { stacked: true, grid: { color: 'rgba(255,255,255,.04)' }, border: { display: false } }
+    }
+  }
 });
 </script>
 """
 
 
+# ===========================================================================
+# Users list
+# ===========================================================================
 USERS_TEMPLATE = """
-<h1>Users</h1>
-<table>
-  <tr>
-    <th>ID</th><th>Name</th><th>Username</th><th>Plan</th><th>Days</th>
-    <th>Diamonds</th><th>Banned</th><th>Actions</th>
-  </tr>
-  {% for u in users %}
-  <tr>
-    <td>#{{ u.id }}</td>
-    <td>{{ u.first_name or '—' }}</td>
-    <td>{{ ('@' + u.username) if u.username else '—' }}</td>
-    <td><span class="pill {{ u.plan }}">{{ u.plan }}</span></td>
-    <td>{{ u.days }}</td>
-    <td>{{ u.diamonds }} 💎</td>
-    <td>{% if u.banned %}<span class="pill bad">banned</span>{% else %}<span class="pill ok">ok</span>{% endif %}</td>
-    <td><a class="btn" href="{{ url_for('user_detail', uid=u.id) }}">Open</a></td>
-  </tr>
-  {% endfor %}
-</table>
-"""
-
-
-USER_DETAIL_TEMPLATE = """
-<h1>User #{{ u.id }}</h1>
-<div class="cards">
-  <div class="card"><div class="label">Diamonds</div><div class="value">{{ u.diamonds }}</div></div>
-  <div class="card"><div class="label">Plan</div><div class="value">{{ u.plan }}</div></div>
-  <div class="card"><div class="label">Days left</div><div class="value">{{ u.days }}</div></div>
-  <div class="card"><div class="label">Referral code</div><div class="value" style="font-size:18px">{{ u.referral_code }}</div></div>
+<div class="page-head">
+  <div>
+    <div class="crumb">Manage</div>
+    <div class="page-title">Users</div>
+    <div class="page-sub">{{ users|length }} registered accounts</div>
+  </div>
 </div>
 
 <div class="card">
-  <h2>Grant diamonds</h2>
-  <form method="post" action="{{ url_for('grant_diamonds', uid=u.id) }}">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="row">
-      <div><label>Amount (negative to subtract)</label><input type="number" name="amount" value="10"></div>
-      <div><label>Reason</label><input type="text" name="reason" value="admin_grant"></div>
-      <button>Apply</button>
-    </div>
-  </form>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th><th>Name</th><th>Username</th><th>Plan</th>
+          <th>Days</th><th>Diamonds</th><th>Status</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for u in users %}
+      <tr>
+        <td class="mono">#{{ u.id }}</td>
+        <td>{{ u.first_name or '—' }}</td>
+        <td class="muted">{{ ('@' + u.username) if u.username else '—' }}</td>
+        <td><span class="badge {{ u.plan }}">{{ u.plan }}</span></td>
+        <td class="mono">{{ u.days }}</td>
+        <td><strong>{{ u.diamonds }}</strong> <span class="muted">◆</span></td>
+        <td>{% if u.banned %}<span class="badge bad">banned</span>{% else %}<span class="badge ok">active</span>{% endif %}</td>
+        <td style="text-align:right">
+          <a class="btn sm" href="{{ url_for('user_detail', uid=u.id) }}">Open →</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="empty">No users yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+"""
+
+
+# ===========================================================================
+# User detail
+# ===========================================================================
+USER_DETAIL_TEMPLATE = """
+<div class="page-head">
+  <div>
+    <div class="crumb">User</div>
+    <div class="page-title">#{{ u.id }}</div>
+    <div class="page-sub">{{ u.first_name or 'Unnamed' }} · joined {{ u.created_at[:10] if u.created_at else '—' }}</div>
+  </div>
+  <a class="btn ghost" href="{{ url_for('users_page') }}">← Back to users</a>
 </div>
 
-<div class="card" style="margin-top:16px">
-  <h2>Set subscription</h2>
-  <form method="post" action="{{ url_for('set_subscription', uid=u.id) }}">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="row">
-      <div>
-        <label>Plan</label>
-        <select name="plan">
-          {% for p in plans %}<option value="{{ p }}" {{ 'selected' if p==u.plan else '' }}>{{ p }}</option>{% endfor %}
-        </select>
-      </div>
-      <div><label>Days</label><input type="number" name="days" value="30"></div>
-      <div>
-        <label>Auto-renew</label>
-        <select name="auto_renew"><option value="0">No</option><option value="1">Yes</option></select>
-      </div>
-      <button>Set</button>
-    </div>
-  </form>
-  <form method="post" action="{{ url_for('cancel_subscription', uid=u.id) }}" style="margin-top:10px">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="ghost">Cancel subscription</button>
-  </form>
+<div class="stats">
+  <div class="stat violet">
+    <div class="k">◆ Diamonds</div>
+    <div class="v">{{ u.diamonds }}</div>
+  </div>
+  <div class="stat indigo">
+    <div class="k">◆ Plan</div>
+    <div class="v" style="font-size:22px">{{ u.plan }}</div>
+  </div>
+  <div class="stat emerald">
+    <div class="k">◷ Days left</div>
+    <div class="v">{{ u.days }}</div>
+  </div>
+  <div class="stat amber">
+    <div class="k">◆ Referral code</div>
+    <div class="v mono" style="font-size:16px">{{ u.referral_code }}</div>
+  </div>
 </div>
 
-<div class="card" style="margin-top:16px">
-  <h2>Moderation</h2>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head"><h2>Grant diamonds</h2></div>
+    <form method="post" action="{{ url_for('grant_diamonds', uid=u.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="field-row">
+        <div style="flex:1">
+          <label>Amount (negative to subtract)</label>
+          <input type="number" name="amount" value="10">
+        </div>
+        <div style="flex:1">
+          <label>Reason</label>
+          <input type="text" name="reason" value="admin_grant">
+        </div>
+        <button class="btn primary">Apply</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Set subscription</h2></div>
+    <form method="post" action="{{ url_for('set_subscription', uid=u.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="field-row">
+        <div style="flex:1">
+          <label>Plan</label>
+          <select name="plan">
+            {% for p in plans %}<option value="{{ p }}" {{ 'selected' if p==u.plan else '' }}>{{ p }}</option>{% endfor %}
+          </select>
+        </div>
+        <div style="flex:0 0 110px">
+          <label>Days</label>
+          <input type="number" name="days" value="30">
+        </div>
+        <div style="flex:0 0 130px">
+          <label>Auto-renew</label>
+          <select name="auto_renew"><option value="0">No</option><option value="1">Yes</option></select>
+        </div>
+        <button class="btn success">Set</button>
+      </div>
+    </form>
+    <div style="margin-top:12px">
+      <form method="post" action="{{ url_for('cancel_subscription', uid=u.id) }}" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn ghost sm">Cancel subscription</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Moderation</h2>
+  </div>
   <form method="post" action="{{ url_for('toggle_ban', uid=u.id) }}" style="display:inline">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="{{ 'success' if u.banned else 'danger' }}">{{ 'Unban' if u.banned else 'Ban' }}</button>
+    <button class="{{ 'btn success' if u.banned else 'btn danger' }}">
+      {{ 'Unban user' if u.banned else 'Ban user' }}
+    </button>
   </form>
   <form method="post" action="{{ url_for('delete_user_route', uid=u.id) }}" style="display:inline"
         onsubmit="return confirm('Delete user? This cannot be undone.');">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="danger">Delete user</button>
+    <button class="btn danger">Delete permanently</button>
   </form>
 </div>
 
-<div class="card" style="margin-top:16px">
-  <h2>Recent transactions</h2>
-  <table>
-    <tr><th>When</th><th>Kind</th><th>Amount</th><th>Reason</th><th>Balance</th></tr>
-    {% for tx in txs %}
-    <tr>
-      <td>{{ tx.created_at[:19] }}</td>
-      <td><span class="pill {{ 'bad' if tx.kind=='spend' else 'ok' }}">{{ tx.kind }}</span></td>
-      <td>{{ tx.amount }}</td>
-      <td>{{ tx.reason }}</td>
-      <td>{{ tx.balance_after }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-</div>
-"""
-
-
-REQUESTS_TEMPLATE = """
-<h1>Requests</h1>
-<table>
-  <tr><th>ID</th><th>User</th><th>Type</th><th>Amount/Plan</th><th>Status</th><th>Created</th><th>Actions</th></tr>
-  {% for r in requests %}
-  <tr>
-    <td>{{ r.id }}</td>
-    <td>#{{ r.user_id }}</td>
-    <td>{{ r.type }}</td>
-    <td>{{ r.amount or r.plan or '—' }}</td>
-    <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
-    <td>{{ r.created_at[:19] }}</td>
-    <td>
-      {% if r.status == 'pending' %}
-      <form method="post" action="{{ url_for('approve_request', rid=r.id) }}" style="display:inline">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="success">✓</button>
-      </form>
-      <form method="post" action="{{ url_for('reject_request', rid=r.id) }}" style="display:inline">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="danger">✕</button>
-      </form>
-      {% endif %}
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-"""
-
-
-TX_TEMPLATE = """
-<h1>Transactions</h1>
-<div class="cards">
-  <div class="card"><div class="label">Granted</div><div class="value">{{ totals.granted }}</div></div>
-  <div class="card"><div class="label">Spent</div><div class="value">{{ totals.spent }}</div></div>
-  <div class="card"><div class="label">Refunded</div><div class="value">{{ totals.refunded }}</div></div>
-</div>
-<table>
-  <tr><th>When</th><th>User</th><th>Kind</th><th>Amount</th><th>Reason</th><th>Balance</th></tr>
-  {% for tx in txs %}
-  <tr>
-    <td>{{ tx.created_at[:19] }}</td>
-    <td>#{{ tx.user_id }}</td>
-    <td><span class="pill {{ 'bad' if tx.kind=='spend' else 'ok' }}">{{ tx.kind }}</span></td>
-    <td>{{ tx.amount }}</td>
-    <td>{{ tx.reason }}</td>
-    <td>{{ tx.balance_after }}</td>
-  </tr>
-  {% endfor %}
-</table>
-"""
-
-
-SHOP_TEMPLATE = """
-<h1>Shop</h1>
 <div class="card">
-  <h2>Add / update item</h2>
+  <div class="card-head"><h2>Recent transactions</h2></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>Kind</th><th>Amount</th><th>Reason</th><th style="text-align:right">Balance</th></tr></thead>
+      <tbody>
+      {% for tx in txs %}
+      <tr>
+        <td class="mono muted">{{ tx.created_at[:19] }}</td>
+        <td><span class="badge {{ 'bad' if tx.kind=='spend' else 'ok' }}">{{ tx.kind }}</span></td>
+        <td><strong>{{ tx.amount }}</strong></td>
+        <td class="muted">{{ tx.reason }}</td>
+        <td class="mono" style="text-align:right">{{ tx.balance_after }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty">No transactions.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+"""
+
+
+# ===========================================================================
+# Requests
+# ===========================================================================
+REQUESTS_TEMPLATE = """
+<div class="page-head">
+  <div>
+    <div class="crumb">Manage</div>
+    <div class="page-title">Requests</div>
+    <div class="page-sub">Approve or reject user submissions</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>User</th><th>Type</th><th>Details</th><th>Status</th><th>Created</th><th style="text-align:right">Actions</th></tr>
+      </thead>
+      <tbody>
+      {% for r in requests %}
+      <tr>
+        <td class="mono tiny">{{ r.id }}</td>
+        <td><a href="{{ url_for('user_detail', uid=r.user_id) }}">#{{ r.user_id }}</a></td>
+        <td>{{ r.type }}</td>
+        <td><strong>{{ r.amount or r.plan or '—' }}</strong></td>
+        <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+        <td class="mono muted tiny">{{ r.created_at[:19] }}</td>
+        <td style="text-align:right">
+          {% if r.status == 'pending' %}
+          <form method="post" action="{{ url_for('approve_request', rid=r.id) }}" style="display:inline">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="btn success sm">✓ Approve</button>
+          </form>
+          <form method="post" action="{{ url_for('reject_request', rid=r.id) }}" style="display:inline">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="btn danger sm">✕</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">No requests.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+"""
+
+
+# ===========================================================================
+# Transactions
+# ===========================================================================
+TX_TEMPLATE = """
+<div class="page-head">
+  <div>
+    <div class="crumb">Manage</div>
+    <div class="page-title">Transactions</div>
+    <div class="page-sub">Full ledger of diamond flow</div>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat emerald">
+    <div class="k">↑ Granted</div>
+    <div class="v">{{ totals.granted }}</div>
+  </div>
+  <div class="stat rose">
+    <div class="k">↓ Spent</div>
+    <div class="v">{{ totals.spent }}</div>
+  </div>
+  <div class="stat amber">
+    <div class="k">↺ Refunded</div>
+    <div class="v">{{ totals.refunded }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>User</th><th>Kind</th><th>Amount</th><th>Reason</th><th style="text-align:right">Balance</th></tr></thead>
+      <tbody>
+      {% for tx in txs %}
+      <tr>
+        <td class="mono muted tiny">{{ tx.created_at[:19] }}</td>
+        <td><a href="{{ url_for('user_detail', uid=tx.user_id) }}">#{{ tx.user_id }}</a></td>
+        <td><span class="badge {{ 'bad' if tx.kind=='spend' else 'ok' }}">{{ tx.kind }}</span></td>
+        <td><strong>{{ tx.amount }}</strong></td>
+        <td class="muted">{{ tx.reason }}</td>
+        <td class="mono" style="text-align:right">{{ tx.balance_after }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">No transactions.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+"""
+
+
+# ===========================================================================
+# Shop
+# ===========================================================================
+SHOP_TEMPLATE = """
+<div class="page-head">
+  <div>
+    <div class="crumb">System</div>
+    <div class="page-title">Shop items</div>
+    <div class="page-sub">Items users can buy with diamonds</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Add or update item</h2></div>
   <form method="post" action="{{ url_for('shop_save') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="row">
+    <div class="field-row">
       <div><label>ID</label><input name="item_id" placeholder="extra_job_slot"></div>
-      <div><label>Name</label><input name="name"></div>
-      <div><label>Price</label><input type="number" name="price" value="20"></div>
-      <div><label>Max per user</label><input type="number" name="max_per_user" value="1"></div>
+      <div><label>Name</label><input name="name" placeholder="Extra job slot"></div>
+      <div style="flex:0 0 120px"><label>Price</label><input type="number" name="price" value="20"></div>
+      <div style="flex:0 0 130px"><label>Max per user</label><input type="number" name="max_per_user" value="1"></div>
     </div>
-    <div><label>Description</label><input name="description" style="max-width:100%"></div>
-    <button style="margin-top:12px">Save</button>
+    <label>Description</label>
+    <input name="description" placeholder="What does this do?">
+    <div style="margin-top:14px">
+      <button class="btn primary">Save item</button>
+    </div>
   </form>
 </div>
 
-<table style="margin-top:18px">
-  <tr><th>ID</th><th>Name</th><th>Price</th><th>Max</th><th>Description</th><th></th></tr>
-  {% for iid, it in items.items() %}
-  <tr>
-    <td><code>{{ iid }}</code></td>
-    <td>{{ it.name }}</td>
-    <td>{{ it.price }} 💎</td>
-    <td>{{ it.max_per_user }}</td>
-    <td class="muted">{{ it.description }}</td>
-    <td>
-      <form method="post" action="{{ url_for('shop_delete', item_id=iid) }}">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="danger">Delete</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
+<div class="card">
+  <div class="card-head"><h2>Current items <span class="sub">{{ items|length }}</span></h2></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>Name</th><th>Price</th><th>Max</th><th>Description</th><th></th></tr></thead>
+      <tbody>
+      {% for iid, it in items.items() %}
+      <tr>
+        <td><code>{{ iid }}</code></td>
+        <td><strong>{{ it.name }}</strong></td>
+        <td><span class="badge info">{{ it.price }} ◆</span></td>
+        <td class="mono">{{ it.max_per_user }}</td>
+        <td class="muted">{{ it.description }}</td>
+        <td style="text-align:right">
+          <form method="post" action="{{ url_for('shop_delete', item_id=iid) }}" style="display:inline">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="btn danger sm">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">No items.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 """
 
 
+# ===========================================================================
+# Audit
+# ===========================================================================
 AUDIT_TEMPLATE = """
-<h1>Audit log</h1>
-<table>
-  <tr><th>When</th><th>Admin</th><th>Action</th><th>Target</th><th>IP</th></tr>
-  {% for e in entries %}
-  <tr>
-    <td>{{ e.created_at[:19] }}</td>
-    <td>#{{ e.admin_id }}</td>
-    <td>{{ e.action }}</td>
-    <td>{{ e.target or '—' }}</td>
-    <td>{{ e.ip or '—' }}</td>
-  </tr>
-  {% endfor %}
-</table>
+<div class="page-head">
+  <div>
+    <div class="crumb">System</div>
+    <div class="page-title">Audit log</div>
+    <div class="page-sub">Every admin action, timestamped</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Target</th><th>IP</th></tr></thead>
+      <tbody>
+      {% for e in entries %}
+      <tr>
+        <td class="mono muted tiny">{{ e.created_at[:19] }}</td>
+        <td class="mono">#{{ e.admin_id }}</td>
+        <td><span class="badge info">{{ e.action }}</span></td>
+        <td class="muted">{{ e.target or '—' }}</td>
+        <td class="mono muted tiny">{{ e.ip or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty">No audit entries.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 """
 
 
+# ===========================================================================
+# Backups
+# ===========================================================================
 BACKUPS_TEMPLATE = """
-<h1>Backups</h1>
+<div class="page-head">
+  <div>
+    <div class="crumb">System</div>
+    <div class="page-title">Backups</div>
+    <div class="page-sub">Snapshot and restore all bot data</div>
+  </div>
+</div>
+
 <div class="grid-2">
   <div class="card">
-    <h2>Manual backup</h2>
-    <p class="muted">Creates a ZIP of all JSON files and sends it to the owner's Telegram DM.</p>
+    <div class="card-head"><h2>Create backup</h2></div>
+    <p class="muted" style="margin-bottom:14px">
+      Zips all JSON data and sends it to the owner's Telegram DM.
+    </p>
     <form method="post" action="{{ url_for('backup_now') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button>Backup now</button>
+      <button class="btn primary">Create backup now</button>
     </form>
   </div>
+
   <div class="card">
-    <h2>Restore from ZIP</h2>
+    <div class="card-head"><h2>Restore from ZIP</h2></div>
+    <p class="muted" style="margin-bottom:14px">
+      Upload a previously created backup archive.
+    </p>
     <form method="post" action="{{ url_for('restore_backup') }}" enctype="multipart/form-data">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="file" name="file" accept=".zip">
-      <button style="margin-top:12px" class="danger">Restore</button>
+      <div style="margin-top:14px">
+        <button class="btn danger">Restore data</button>
+      </div>
     </form>
   </div>
 </div>
 
-<h2 style="margin-top:22px">Local backups</h2>
-<table>
-  <tr><th>File</th><th>Size</th><th>Modified</th><th></th></tr>
-  {% for b in backups %}
-  <tr>
-    <td>{{ b.name }}</td>
-    <td>{{ b.size_kb }} KB</td>
-    <td>{{ b.modified }}</td>
-    <td><a class="btn" href="{{ url_for('download_backup', name=b.name) }}">Download</a></td>
-  </tr>
-  {% endfor %}
-</table>
+<div class="card">
+  <div class="card-head"><h2>Local backups <span class="sub">{{ backups|length }}</span></h2></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+      <tbody>
+      {% for b in backups %}
+      <tr>
+        <td class="mono">{{ b.name }}</td>
+        <td class="mono">{{ b.size_kb }} KB</td>
+        <td class="muted tiny">{{ b.modified }}</td>
+        <td style="text-align:right">
+          <a class="btn sm" href="{{ url_for('download_backup', name=b.name) }}">Download</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No backups yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 """
 
 
+# ===========================================================================
+# Broadcast
+# ===========================================================================
 BROADCAST_TEMPLATE = """
-<h1>Broadcast</h1>
+<div class="page-head">
+  <div>
+    <div class="crumb">System</div>
+    <div class="page-title">Broadcast</div>
+    <div class="page-sub">Send a message to all non-banned users</div>
+  </div>
+</div>
+
 <div class="card">
-  <p class="muted">Send a message to every non-banned user via the bot.</p>
   <form method="post" action="{{ url_for('broadcast_send') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Message</label>
-    <textarea name="message" rows="6" style="max-width:100%"></textarea>
-    <button style="margin-top:12px">Send broadcast</button>
+    <textarea name="message" rows="8" placeholder="Hello everyone..."></textarea>
+    <div style="margin-top:16px">
+      <button class="btn primary">Send to all users →</button>
+    </div>
   </form>
 </div>
 """
 
 
+# ===========================================================================
+# Settings
+# ===========================================================================
 SETTINGS_TEMPLATE = """
-<h1>Settings</h1>
+<div class="page-head">
+  <div>
+    <div class="crumb">System</div>
+    <div class="page-title">Settings</div>
+    <div class="page-sub">Runtime economy and bot configuration</div>
+  </div>
+</div>
+
 <div class="card">
-  <h2>Runtime config</h2>
+  <div class="card-head"><h2>Economy</h2></div>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="row">
+    <div class="field-row">
       <div><label>Signup bonus</label><input type="number" name="signup_bonus" value="{{ cfg.signup_bonus }}"></div>
       <div><label>Cost per clock update</label><input type="number" name="diamond_cost_clock" value="{{ cfg.diamond_cost_clock }}"></div>
       <div><label>Cost per job</label><input type="number" name="diamond_cost_job" value="{{ cfg.diamond_cost_job }}"></div>
       <div><label>Referral bonus</label><input type="number" name="referral_bonus" value="{{ cfg.referral_bonus }}"></div>
     </div>
-    <div class="row" style="margin-top:12px">
+    <div class="field-row" style="margin-top:14px">
       <div><label>Timezone</label><input name="timezone" value="{{ cfg.timezone }}"></div>
       <div><label>Base name</label><input name="base_name" value="{{ cfg.base_name }}"></div>
-      <div><label>Interval (min)</label><input type="number" name="interval" value="{{ cfg.interval }}"></div>
+      <div style="flex:0 0 140px"><label>Interval (min)</label><input type="number" name="interval" value="{{ cfg.interval }}"></div>
     </div>
-    <button style="margin-top:14px">Save</button>
+    <div style="margin-top:18px">
+      <button class="btn primary">Save settings</button>
+    </div>
   </form>
 </div>
 
-<div class="card" style="margin-top:16px">
-  <h2>API token</h2>
-  <p class="muted">Set <code>API_TOKEN</code> as an env var to protect <code>/api/*</code>.</p>
+<div class="card">
+  <div class="card-head"><h2>Security</h2></div>
+  <p class="muted" style="margin-bottom:14px">
+    Two-factor authentication protects your admin login with a TOTP code.
+  </p>
+  <a class="btn primary" href="{{ url_for('totp_page') }}">Configure 2FA →</a>
 </div>
 
-<div class="card" style="margin-top:16px">
-  <h2>Two-Factor Authentication</h2>
-  <p class="muted">Add TOTP 2FA to the admin login.</p>
-  <a class="btn" href="{{ url_for('totp_page') }}">Configure 2FA</a>
+<div class="card">
+  <div class="card-head"><h2>API access</h2></div>
+  <p class="muted">
+    Set the <code>API_TOKEN</code> environment variable to protect <code>/api/*</code> endpoints.
+    Pass it as <code>Authorization: Bearer &lt;token&gt;</code>.
+  </p>
 </div>
 """
 
 
+# ===========================================================================
+# TOTP
+# ===========================================================================
 TOTP_TEMPLATE = """
-<h1>Two-Factor Authentication</h1>
+<div class="page-head">
+  <div>
+    <div class="crumb">Security</div>
+    <div class="page-title">Two-Factor Authentication</div>
+  </div>
+  <a class="btn ghost" href="{{ url_for('settings_page') }}">← Back</a>
+</div>
+
 <div class="card">
   {% if enabled %}
-    <p class="muted">2FA is currently <span class="pill ok">enabled</span>.</p>
+    <div class="badge ok" style="margin-bottom:14px">2FA enabled</div>
+    <p class="muted" style="margin-bottom:16px">
+      Your account is protected with TOTP. You will be prompted for a code on every login.
+    </p>
     <form method="post" action="{{ url_for('totp_disable') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button class="danger">Disable 2FA</button>
+      <button class="btn danger">Disable 2FA</button>
     </form>
   {% else %}
-    <p class="muted">2FA is currently <span class="pill pending">disabled</span>.</p>
+    <div class="badge pending" style="margin-bottom:14px">2FA disabled</div>
     {% if qr_b64 %}
-      <p>Scan this QR code with your authenticator app:</p>
+      <p class="muted">Scan this QR code with your authenticator app:</p>
       <img src="data:image/png;base64,{{ qr_b64 }}" alt="QR"
-           style="background:#fff;padding:10px;border-radius:10px;">
+           style="background:#fff;padding:14px;border-radius:14px;margin:16px 0;">
       <p class="muted">Or enter this secret manually:</p>
-      <p><code style="font-size:16px">{{ pending_secret }}</code></p>
+      <p style="margin:8px 0 20px"><code>{{ pending_secret }}</code></p>
       <form method="post" action="{{ url_for('totp_enable') }}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="success">Enable 2FA</button>
+        <button class="btn success">Enable 2FA</button>
       </form>
     {% else %}
-      <p class="muted">pyotp not installed. Add <code>pyotp</code> and <code>qrcode</code> to requirements.</p>
+      <p class="muted">pyotp or qrcode not installed. Add them to requirements.</p>
     {% endif %}
   {% endif %}
 </div>
 """
 
 
+# ===========================================================================
+# Proxy
+# ===========================================================================
 PROXY_TEMPLATE = """
-<h1>Proxy Configs</h1>
-<p class="muted">Manage VLESS/Xray configs. Test latency to Telegram DCs and egress IP.</p>
-
-<div class="card" style="margin-top:16px">
-  <h2>Active config: <code>{{ active }}</code></h2>
-  <button class="success" id="test-active-btn">Test active config</button>
-  <pre id="test-active-result" style="margin-top:12px;white-space:pre-wrap;
-       background:#0b0f1a;padding:12px;border-radius:9px;font-size:12px;
-       color:#8fa0bd;display:none"></pre>
+<div class="page-head">
+  <div>
+    <div class="crumb">System</div>
+    <div class="page-title">Proxy configs</div>
+    <div class="page-sub">Manage VLESS/Xray configs, test latency and egress IP</div>
+  </div>
 </div>
 
-<table style="margin-top:18px">
-  <tr><th>Key</th><th>Name</th><th>URL</th><th>Status</th><th>Actions</th></tr>
-  {% for c in configs %}
-  <tr>
-    <td><code>{{ c.key }}</code></td>
-    <td>{{ c.name }}</td>
-    <td class="mono">{{ c.url_short }}</td>
-    <td>{% if c.active %}<span class="pill ok">active</span>{% else %}<span class="pill">idle</span>{% endif %}</td>
-    <td>
-      <button class="btn small" onclick="testConfig('{{ c.key }}')">Test</button>
-      {% if not c.active %}
-      <form method="post" action="{{ url_for('proxy_activate', key=c.key) }}" style="display:inline">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="btn small success">Activate</button>
-      </form>
-      {% endif %}
-    </td>
-  </tr>
-  {% endfor %}
-</table>
+<div class="card">
+  <div class="card-head">
+    <h2>Active config: <code>{{ active }}</code></h2>
+  </div>
+  <button class="btn primary" id="test-active-btn">Test active config</button>
+  <pre id="test-active-result" style="margin-top:14px;white-space:pre-wrap;
+       background:rgba(0,0,0,.35);padding:14px;border-radius:12px;font-size:12px;
+       color:#a5b4fc;display:none;font-family:'JetBrains Mono',monospace;border:1px solid var(--stroke)"></pre>
+</div>
 
-<div id="test-result" style="margin-top:16px"></div>
+<div class="card">
+  <div class="card-head"><h2>All configs <span class="sub">{{ configs|length }}</span></h2></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Key</th><th>Name</th><th>URL</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead>
+      <tbody>
+      {% for c in configs %}
+      <tr>
+        <td><code>{{ c.key }}</code></td>
+        <td>{{ c.name }}</td>
+        <td class="mono muted tiny">{{ c.url_short }}</td>
+        <td>{% if c.active %}<span class="badge ok">active</span>{% else %}<span class="badge free">idle</span>{% endif %}</td>
+        <td style="text-align:right">
+          <button class="btn sm" onclick="testConfig('{{ c.key }}')">Test</button>
+          {% if not c.active %}
+          <form method="post" action="{{ url_for('proxy_activate', key=c.key) }}" style="display:inline">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="btn success sm">Activate</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty">No configs.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 
-<div class="card" style="margin-top:22px">
-  <h2>Add config</h2>
+<div id="test-result" style="margin-bottom:20px"></div>
+
+<div class="card">
+  <div class="card-head"><h2>Add config</h2></div>
   <form method="post" action="{{ url_for('proxy_add') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="row">
+    <div class="field-row">
       <div><label>Key</label><input name="key" placeholder="us-1"></div>
       <div><label>Name</label><input name="name" placeholder="US Server 1"></div>
     </div>
-    <div><label>VLESS URL</label><input name="url" style="max-width:100%" placeholder="vless://..."></div>
-    <div>
-      <label>Outbound JSON</label>
-      <textarea name="outbound" rows="12" style="max-width:100%;font-family:monospace;font-size:12px"
-placeholder='{"protocol":"vless","settings":{"vnext":[{"address":"...","port":443,"users":[{"id":"...","encryption":"none","flow":""}]}]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"serverName":"...","fingerprint":"chrome","alpn":["http/1.1"]},"wsSettings":{"path":"/...","headers":{"Host":"..."}}}}'></textarea>
+    <label>VLESS URL</label>
+    <input name="url" placeholder="vless://...">
+    <label>Outbound JSON</label>
+    <textarea name="outbound" rows="10" style="font-family:'JetBrains Mono',monospace;font-size:12px"
+placeholder='{
+  "protocol": "vless",
+  "settings": { "vnext": [ { "address": "...", "port": 443, "users": [ { "id": "...", "encryption": "none", "flow": "" } ] } ] },
+  "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "serverName": "...", "fingerprint": "chrome", "alpn": ["http/1.1"] }, "wsSettings": { "path": "/...", "headers": { "Host": "..." } } }
+}'></textarea>
+    <div style="margin-top:16px">
+      <button class="btn primary">Add config</button>
     </div>
-    <button style="margin-top:12px">Add</button>
   </form>
 </div>
 
 <script>
 async function testConfig(key) {
   const el = document.getElementById('test-result');
-  el.innerHTML = '<div class="card">Testing <code>' + key + '</code> ...</div>';
+  el.innerHTML = '<div class="card"><p class="muted">Testing <code>' + key + '</code>…</p></div>';
   const csrf = '{{ csrf }}';
   try {
     const r = await fetch('/admin/proxy/test/' + key, {
@@ -707,17 +1280,18 @@ async function testConfig(key) {
       headers: {'X-CSRF-Token': csrf}
     });
     const data = await r.json();
-    el.innerHTML = '<div class="card"><h2>Result: ' + key + '</h2><pre style="white-space:pre-wrap;color:#8fa0bd;font-size:12px">' +
+    el.innerHTML = '<div class="card"><div class="card-head"><h2>Result: ' + key + '</h2></div>' +
+      '<pre style="white-space:pre-wrap;color:#a5b4fc;font-size:12px;background:rgba(0,0,0,.35);padding:14px;border-radius:12px;font-family:JetBrains Mono,monospace">' +
       JSON.stringify(data, null, 2) + '</pre></div>';
   } catch (e) {
-    el.innerHTML = '<div class="card"><p style="color:#ef4444">Error: ' + e + '</p></div>';
+    el.innerHTML = '<div class="flash err">Error: ' + e + '</div>';
   }
 }
 document.getElementById('test-active-btn').addEventListener('click', async (ev) => {
   ev.preventDefault();
   const el = document.getElementById('test-active-result');
   el.style.display = 'block';
-  el.textContent = 'Testing active config...';
+  el.textContent = 'Testing active config…';
   const csrf = '{{ csrf }}';
   try {
     const r = await fetch('/admin/proxy/test', {
@@ -865,11 +1439,13 @@ def build_admin_app() -> Flask:
             USER_DETAIL_TEMPLATE,
             u={
                 "id": uid,
+                "first_name": u.get("first_name", ""),
                 "diamonds": int(u.get("diamonds", 0) or 0),
                 "plan": effective_plan(uid),
                 "days": days_left(uid),
                 "referral_code": u.get("referral_code", "—"),
                 "banned": bool(u.get("banned", False)),
+                "created_at": u.get("created_at", ""),
             },
             plans=list(PLANS.keys()),
             txs=tx_for_user(uid, 50),
@@ -1206,7 +1782,7 @@ def build_admin_app() -> Flask:
         return redirect(url_for("settings_page"))
 
     # ===================================================================
-    # Two-Factor Authentication
+    # TOTP
     # ===================================================================
     @app.route("/admin/settings/2fa", methods=["GET"])
     @_login_required
@@ -1217,7 +1793,6 @@ def build_admin_app() -> Flask:
         enabled = is_enabled()
         secret = get_secret() if enabled else None
         qr_b64 = ""
-        uri = ""
         if not enabled and HAS_PYOTP:
             s, uri, png = provision()
             session["pending_totp_secret"] = s
@@ -1228,7 +1803,6 @@ def build_admin_app() -> Flask:
             TOTP_TEMPLATE,
             enabled=enabled,
             secret=secret,
-            uri=uri,
             qr_b64=qr_b64,
             pending_secret=session.get("pending_totp_secret", ""),
             csrf=_csrf_token(),
@@ -1262,7 +1836,7 @@ def build_admin_app() -> Flask:
         return redirect(url_for("totp_page"))
 
     # ===================================================================
-    # Proxy configs
+    # Proxy
     # ===================================================================
     @app.route("/admin/proxy")
     @_login_required
@@ -1271,18 +1845,15 @@ def build_admin_app() -> Flask:
         data = list_configs()
         configs = data.get("configs", {})
         active = data.get("active", "default")
-
         rows = []
         for key, cfg in configs.items():
+            url = cfg.get("url") or ""
             rows.append({
                 "key": key,
                 "name": cfg.get("name", key),
-                "url_short": ((cfg.get("url") or "")[:60] + "...")
-                             if len((cfg.get("url") or "")) > 60
-                             else (cfg.get("url") or ""),
+                "url_short": (url[:60] + "...") if len(url) > 60 else url,
                 "active": (key == active),
             })
-
         body = render_template_string(
             PROXY_TEMPLATE, configs=rows, active=active, csrf=_csrf_token(),
         )
@@ -1350,9 +1921,6 @@ def build_admin_app() -> Flask:
     return app
 
 
-# ===========================================================================
-# Runtime accessor
-# ===========================================================================
 def _get_runtime_safe():
     try:
         from app import _get_runtime
