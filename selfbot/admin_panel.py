@@ -72,7 +72,7 @@ def _login_required(fn):
     @functools.wraps(fn)
     def wrapper(*a, **kw):
         if not session.get("admin"):
-            return redirect(url_for("admin.login"))
+            return redirect(url_for("login"))
         return fn(*a, **kw)
     return wrapper
 
@@ -192,17 +192,17 @@ label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px;}
 {% if session.get('admin') %}
 <div class="nav">
   <div class="logo">◆ SELF BOT</div>
-  <a href="{{ url_for('admin.dashboard') }}" class="{{ 'active' if page=='dashboard' else '' }}">Dashboard</a>
-  <a href="{{ url_for('admin.users_page') }}" class="{{ 'active' if page=='users' else '' }}">Users</a>
-  <a href="{{ url_for('admin.requests_page') }}" class="{{ 'active' if page=='requests' else '' }}">Requests</a>
-  <a href="{{ url_for('admin.transactions_page') }}" class="{{ 'active' if page=='tx' else '' }}">Transactions</a>
-  <a href="{{ url_for('admin.shop_page') }}" class="{{ 'active' if page=='shop' else '' }}">Shop</a>
-  <a href="{{ url_for('admin.audit_page') }}" class="{{ 'active' if page=='audit' else '' }}">Audit</a>
-  <a href="{{ url_for('admin.backups_page') }}" class="{{ 'active' if page=='backups' else '' }}">Backups</a>
-  <a href="{{ url_for('admin.broadcast_page') }}" class="{{ 'active' if page=='broadcast' else '' }}">Broadcast</a>
-  <a href="{{ url_for('admin.settings_page') }}" class="{{ 'active' if page=='settings' else '' }}">Settings</a>
+  <a href="{{ url_for('dashboard') }}" class="{{ 'active' if page=='dashboard' else '' }}">Dashboard</a>
+  <a href="{{ url_for('users_page') }}" class="{{ 'active' if page=='users' else '' }}">Users</a>
+  <a href="{{ url_for('requests_page') }}" class="{{ 'active' if page=='requests' else '' }}">Requests</a>
+  <a href="{{ url_for('transactions_page') }}" class="{{ 'active' if page=='tx' else '' }}">Transactions</a>
+  <a href="{{ url_for('shop_page') }}" class="{{ 'active' if page=='shop' else '' }}">Shop</a>
+  <a href="{{ url_for('audit_page') }}" class="{{ 'active' if page=='audit' else '' }}">Audit</a>
+  <a href="{{ url_for('backups_page') }}" class="{{ 'active' if page=='backups' else '' }}">Backups</a>
+  <a href="{{ url_for('broadcast_page') }}" class="{{ 'active' if page=='broadcast' else '' }}">Broadcast</a>
+  <a href="{{ url_for('settings_page') }}" class="{{ 'active' if page=='settings' else '' }}">Settings</a>
   <span style="flex:1"></span>
-  <a href="{{ url_for('admin.logout') }}">Logout</a>
+  <a href="{{ url_for('logout') }}">Logout</a>
 </div>
 {% endif %}
 <div class="container">
@@ -221,7 +221,7 @@ label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px;}
 LOGIN_TEMPLATE = """
 <div class="login-box">
   <h1 style="text-align:center">SELF BOT Admin</h1>
-  <form method="post" action="{{ url_for('admin.login_post') }}">
+  <form method="post" action="{{ url_for('login_post') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Password</label>
     <input type="password" name="password" autofocus>
@@ -340,7 +340,7 @@ USERS_TEMPLATE = """
     <td>{{ u.days }}</td>
     <td>{{ u.diamonds }} 💎</td>
     <td>{% if u.banned %}<span class="pill bad">banned</span>{% else %}<span class="pill ok">ok</span>{% endif %}</td>
-    <td><a class="btn" href="{{ url_for('admin.user_detail', uid=u.id) }}">Open</a></td>
+    <td><a class="btn" href="{{ url_for('user_detail', uid=u.id) }}">Open</a></td>
   </tr>
   {% endfor %}
 </table>
@@ -358,7 +358,7 @@ USER_DETAIL_TEMPLATE = """
 
 <div class="card">
   <h2>Grant diamonds</h2>
-  <form method="post" action="{{ url_for('admin.grant_diamonds', uid=u.id) }}">
+  <form method="post" action="{{ url_for('grant_diamonds', uid=u.id) }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="row">
       <div><label>Amount (negative to subtract)</label><input type="number" name="amount" value="10"></div>
@@ -370,7 +370,7 @@ USER_DETAIL_TEMPLATE = """
 
 <div class="card" style="margin-top:16px">
   <h2>Set subscription</h2>
-  <form method="post" action="{{ url_for('admin.set_subscription', uid=u.id) }}">
+  <form method="post" action="{{ url_for('set_subscription', uid=u.id) }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="row">
       <div>
@@ -387,7 +387,7 @@ USER_DETAIL_TEMPLATE = """
       <button>Set</button>
     </div>
   </form>
-  <form method="post" action="{{ url_for('admin.cancel_subscription', uid=u.id) }}" style="margin-top:10px">
+  <form method="post" action="{{ url_for('cancel_subscription', uid=u.id) }}" style="margin-top:10px">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <button class="ghost">Cancel subscription</button>
   </form>
@@ -395,11 +395,11 @@ USER_DETAIL_TEMPLATE = """
 
 <div class="card" style="margin-top:16px">
   <h2>Moderation</h2>
-  <form method="post" action="{{ url_for('admin.toggle_ban', uid=u.id) }}" style="display:inline">
+  <form method="post" action="{{ url_for('toggle_ban', uid=u.id) }}" style="display:inline">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <button class="{{ 'success' if u.banned else 'danger' }}">{{ 'Unban' if u.banned else 'Ban' }}</button>
   </form>
-  <form method="post" action="{{ url_for('admin.delete_user_route', uid=u.id) }}" style="display:inline"
+  <form method="post" action="{{ url_for('delete_user_route', uid=u.id) }}" style="display:inline"
         onsubmit="return confirm('Delete user? This cannot be undone.');">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <button class="danger">Delete user</button>
@@ -438,11 +438,11 @@ REQUESTS_TEMPLATE = """
     <td>{{ r.created_at[:19] }}</td>
     <td>
       {% if r.status == 'pending' %}
-      <form method="post" action="{{ url_for('admin.approve_request', rid=r.id) }}" style="display:inline">
+      <form method="post" action="{{ url_for('approve_request', rid=r.id) }}" style="display:inline">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button class="success">✓</button>
       </form>
-      <form method="post" action="{{ url_for('admin.reject_request', rid=r.id) }}" style="display:inline">
+      <form method="post" action="{{ url_for('reject_request', rid=r.id) }}" style="display:inline">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button class="danger">✕</button>
       </form>
@@ -481,7 +481,7 @@ SHOP_TEMPLATE = """
 <h1>Shop</h1>
 <div class="card">
   <h2>Add / update item</h2>
-  <form method="post" action="{{ url_for('admin.shop_save') }}">
+  <form method="post" action="{{ url_for('shop_save') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="row">
       <div><label>ID</label><input name="item_id" placeholder="extra_job_slot"></div>
@@ -504,7 +504,7 @@ SHOP_TEMPLATE = """
     <td>{{ it.max_per_user }}</td>
     <td class="muted">{{ it.description }}</td>
     <td>
-      <form method="post" action="{{ url_for('admin.shop_delete', item_id=iid) }}">
+      <form method="post" action="{{ url_for('shop_delete', item_id=iid) }}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button class="danger">Delete</button>
       </form>
@@ -538,14 +538,14 @@ BACKUPS_TEMPLATE = """
   <div class="card">
     <h2>Manual backup</h2>
     <p class="muted">Creates a ZIP of all JSON files and sends it to the owner's Telegram DM.</p>
-    <form method="post" action="{{ url_for('admin.backup_now') }}">
+    <form method="post" action="{{ url_for('backup_now') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button>Backup now</button>
     </form>
   </div>
   <div class="card">
     <h2>Restore from ZIP</h2>
-    <form method="post" action="{{ url_for('admin.restore_backup') }}" enctype="multipart/form-data">
+    <form method="post" action="{{ url_for('restore_backup') }}" enctype="multipart/form-data">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="file" name="file" accept=".zip">
       <button style="margin-top:12px" class="danger">Restore</button>
@@ -561,7 +561,7 @@ BACKUPS_TEMPLATE = """
     <td>{{ b.name }}</td>
     <td>{{ b.size_kb }} KB</td>
     <td>{{ b.modified }}</td>
-    <td><a class="btn" href="{{ url_for('admin.download_backup', name=b.name) }}">Download</a></td>
+    <td><a class="btn" href="{{ url_for('download_backup', name=b.name) }}">Download</a></td>
   </tr>
   {% endfor %}
 </table>
@@ -572,7 +572,7 @@ BROADCAST_TEMPLATE = """
 <h1>Broadcast</h1>
 <div class="card">
   <p class="muted">Send a message to every non-banned user via the bot.</p>
-  <form method="post" action="{{ url_for('admin.broadcast_send') }}">
+  <form method="post" action="{{ url_for('broadcast_send') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Message</label>
     <textarea name="message" rows="6" style="max-width:100%"></textarea>
@@ -586,7 +586,7 @@ SETTINGS_TEMPLATE = """
 <h1>Settings</h1>
 <div class="card">
   <h2>Runtime config</h2>
-  <form method="post" action="{{ url_for('admin.settings_save') }}">
+  <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="row">
       <div><label>Signup bonus</label><input type="number" name="signup_bonus" value="{{ cfg.signup_bonus }}"></div>
@@ -611,7 +611,7 @@ SETTINGS_TEMPLATE = """
 <div class="card" style="margin-top:16px">
   <h2>Two-Factor Authentication</h2>
   <p class="muted">Add TOTP 2FA to the admin login.</p>
-  <a class="btn" href="{{ url_for('admin.totp_page') }}">Configure 2FA</a>
+  <a class="btn" href="{{ url_for('totp_page') }}">Configure 2FA</a>
 </div>
 """
 
@@ -621,7 +621,7 @@ TOTP_TEMPLATE = """
 <div class="card">
   {% if enabled %}
     <p class="muted">2FA is currently <span class="pill ok">enabled</span>.</p>
-    <form method="post" action="{{ url_for('admin.totp_disable') }}">
+    <form method="post" action="{{ url_for('totp_disable') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="danger">Disable 2FA</button>
     </form>
@@ -633,7 +633,7 @@ TOTP_TEMPLATE = """
            style="background:#fff;padding:10px;border-radius:10px;">
       <p class="muted">Or enter this secret manually:</p>
       <p><code style="font-size:16px">{{ pending_secret }}</code></p>
-      <form method="post" action="{{ url_for('admin.totp_enable') }}">
+      <form method="post" action="{{ url_for('totp_enable') }}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button class="success">Enable 2FA</button>
       </form>
@@ -682,8 +682,8 @@ def build_admin_app() -> Flask:
     @app.route("/", methods=["GET"])
     def index():
         if session.get("admin"):
-            return redirect(url_for("admin.dashboard"))
-        return redirect(url_for("admin.login"))
+            return redirect(url_for("dashboard"))
+        return redirect(url_for("login"))
 
     @app.route("/admin/login", methods=["GET"])
     @_rate_limit
@@ -703,23 +703,23 @@ def build_admin_app() -> Flask:
         pw = request.form.get("password", "")
         if pw != ADMIN_PASSWORD:
             flash("Invalid password", "error")
-            return redirect(url_for("admin.login"))
+            return redirect(url_for("login"))
 
         from .admin_totp import is_enabled as _totp_enabled, verify as _totp_verify
         if _totp_enabled():
             code = request.form.get("totp", "").strip()
             if not _totp_verify(code):
                 flash("Invalid 2FA code", "error")
-                return redirect(url_for("admin.login"))
+                return redirect(url_for("login"))
 
         session["admin"] = True
         session.permanent = True
-        return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("dashboard"))
 
     @app.route("/admin/logout")
     def logout():
         session.clear()
-        return redirect(url_for("admin.login"))
+        return redirect(url_for("login"))
 
     # ===================================================================
     # Dashboard
@@ -807,7 +807,7 @@ def build_admin_app() -> Flask:
         audit_record(0, "grant_diamonds", target=str(uid), ip=request.remote_addr,
                      meta={"amount": amount, "reason": reason})
         flash(f"Applied {amount} diamonds to user {uid}.")
-        return redirect(url_for("admin.user_detail", uid=uid))
+        return redirect(url_for("user_detail", uid=uid))
 
     @app.route("/admin/users/<int:uid>/subscription", methods=["POST"])
     @_login_required
@@ -823,7 +823,7 @@ def build_admin_app() -> Flask:
         audit_record(0, "set_subscription", target=str(uid), ip=request.remote_addr,
                      meta={"plan": plan, "days": days})
         flash(f"Subscription set to {plan} for {days} days.")
-        return redirect(url_for("admin.user_detail", uid=uid))
+        return redirect(url_for("user_detail", uid=uid))
 
     @app.route("/admin/users/<int:uid>/subscription/cancel", methods=["POST"])
     @_login_required
@@ -832,7 +832,7 @@ def build_admin_app() -> Flask:
         cancel_sub(uid)
         audit_record(0, "cancel_subscription", target=str(uid), ip=request.remote_addr)
         flash("Subscription cancelled.")
-        return redirect(url_for("admin.user_detail", uid=uid))
+        return redirect(url_for("user_detail", uid=uid))
 
     @app.route("/admin/users/<int:uid>/ban", methods=["POST"])
     @_login_required
@@ -845,7 +845,7 @@ def build_admin_app() -> Flask:
         else:
             ban(uid)
             audit_record(0, "ban", target=str(uid), ip=request.remote_addr)
-        return redirect(url_for("admin.user_detail", uid=uid))
+        return redirect(url_for("user_detail", uid=uid))
 
     @app.route("/admin/users/<int:uid>/delete", methods=["POST"])
     @_login_required
@@ -854,7 +854,7 @@ def build_admin_app() -> Flask:
         delete_user(uid)
         audit_record(0, "delete_user", target=str(uid), ip=request.remote_addr)
         flash(f"User {uid} deleted.")
-        return redirect(url_for("admin.users_page"))
+        return redirect(url_for("users_page"))
 
     # ===================================================================
     # Requests
@@ -877,7 +877,7 @@ def build_admin_app() -> Flask:
         approve(rid, 0)
         audit_record(0, "approve_request", target=rid, ip=request.remote_addr)
         flash(f"Request {rid} approved.")
-        return redirect(url_for("admin.requests_page"))
+        return redirect(url_for("requests_page"))
 
     @app.route("/admin/requests/<rid>/reject", methods=["POST"])
     @_login_required
@@ -886,7 +886,7 @@ def build_admin_app() -> Flask:
         reject(rid, 0)
         audit_record(0, "reject_request", target=rid, ip=request.remote_addr)
         flash(f"Request {rid} rejected.")
-        return redirect(url_for("admin.requests_page"))
+        return redirect(url_for("requests_page"))
 
     # ===================================================================
     # Transactions
@@ -922,7 +922,7 @@ def build_admin_app() -> Flask:
         item_id = request.form.get("item_id", "").strip()
         if not item_id:
             flash("Item ID required.", "error")
-            return redirect(url_for("admin.shop_page"))
+            return redirect(url_for("shop_page"))
         existing = shop_items().get(item_id, {})
         try:
             price = int(request.form.get("price", "0") or 0)
@@ -941,7 +941,7 @@ def build_admin_app() -> Flask:
         })
         audit_record(0, "shop_save", target=item_id, ip=request.remote_addr)
         flash(f"Item {item_id} saved.")
-        return redirect(url_for("admin.shop_page"))
+        return redirect(url_for("shop_page"))
 
     @app.route("/admin/shop/delete/<item_id>", methods=["POST"])
     @_login_required
@@ -950,7 +950,7 @@ def build_admin_app() -> Flask:
         delete_item(item_id)
         audit_record(0, "shop_delete", target=item_id, ip=request.remote_addr)
         flash(f"Item {item_id} deleted.")
-        return redirect(url_for("admin.shop_page"))
+        return redirect(url_for("shop_page"))
 
     # ===================================================================
     # Audit
@@ -996,7 +996,7 @@ def build_admin_app() -> Flask:
         except Exception as e:
             log_flask.error(f"manual backup failed: {e}")
             flash(f"Backup failed: {e}", "error")
-        return redirect(url_for("admin.backups_page"))
+        return redirect(url_for("backups_page"))
 
     @app.route("/admin/backups/download/<name>")
     @_login_required
@@ -1015,7 +1015,7 @@ def build_admin_app() -> Flask:
         f = request.files.get("file")
         if not f or not f.filename.endswith(".zip"):
             flash("Upload a .zip file.", "error")
-            return redirect(url_for("admin.backups_page"))
+            return redirect(url_for("backups_page"))
         try:
             restore_from_zip(f.read())
             audit_record(0, "restore_backup", ip=request.remote_addr)
@@ -1023,7 +1023,7 @@ def build_admin_app() -> Flask:
         except Exception as e:
             log_flask.error(f"restore failed: {e}")
             flash(f"Restore failed: {e}", "error")
-        return redirect(url_for("admin.backups_page"))
+        return redirect(url_for("backups_page"))
 
     # ===================================================================
     # Broadcast
@@ -1042,12 +1042,12 @@ def build_admin_app() -> Flask:
         msg = request.form.get("message", "").strip()
         if not msg:
             flash("Empty message.", "error")
-            return redirect(url_for("admin.broadcast_page"))
+            return redirect(url_for("broadcast_page"))
 
         rt = _get_runtime_safe()
         if not rt or not rt.bot_client:
             flash("Bot not connected.", "error")
-            return redirect(url_for("admin.broadcast_page"))
+            return redirect(url_for("broadcast_page"))
 
         try:
             from selfbot.bootstrap import _async_loop
@@ -1056,7 +1056,7 @@ def build_admin_app() -> Flask:
 
         if _async_loop is None or not _async_loop.is_running():
             flash("Bot event loop is not running.", "error")
-            return redirect(url_for("admin.broadcast_page"))
+            return redirect(url_for("broadcast_page"))
 
         import asyncio
 
@@ -1079,7 +1079,7 @@ def build_admin_app() -> Flask:
             flash(f"Broadcast sent to {sent} users.")
         except Exception as e:
             flash(f"Broadcast failed: {e}", "error")
-        return redirect(url_for("admin.broadcast_page"))
+        return redirect(url_for("broadcast_page"))
 
     # ===================================================================
     # Settings
@@ -1116,7 +1116,7 @@ def build_admin_app() -> Flask:
         save_config(CONFIG)
         audit_record(0, "settings_save", ip=request.remote_addr)
         flash("Settings saved.")
-        return redirect(url_for("admin.settings_page"))
+        return redirect(url_for("settings_page"))
 
     # ===================================================================
     # Two-Factor Authentication
@@ -1157,12 +1157,12 @@ def build_admin_app() -> Flask:
         secret = session.get("pending_totp_secret", "")
         if not secret:
             flash("No pending secret. Reload the page.", "error")
-            return redirect(url_for("admin.totp_page"))
+            return redirect(url_for("totp_page"))
         _enable(secret)
         session.pop("pending_totp_secret", None)
         audit_record(0, "totp_enable", ip=request.remote_addr)
         flash("2FA enabled.")
-        return redirect(url_for("admin.totp_page"))
+        return redirect(url_for("totp_page"))
 
     @app.route("/admin/settings/2fa/disable", methods=["POST"])
     @_login_required
@@ -1172,13 +1172,13 @@ def build_admin_app() -> Flask:
         _disable()
         audit_record(0, "totp_disable", ip=request.remote_addr)
         flash("2FA disabled.")
-        return redirect(url_for("admin.totp_page"))
+        return redirect(url_for("totp_page"))
 
     return app
 
 
 # ===========================================================================
-# Runtime accessor (used by broadcast)
+# Runtime accessor
 # ===========================================================================
 def _get_runtime_safe():
     try:

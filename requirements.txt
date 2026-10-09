@@ -11,4 +11,5 @@ requests
 tzdata
 aiosqlite
 pyotp
+qrcode
 pytest

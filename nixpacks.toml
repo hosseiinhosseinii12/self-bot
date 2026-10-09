@@ -5,4 +5,4 @@ nixPkgs = ["python311", "gcc"]
 cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
 
 [start]
-cmd = "gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 app:flask_app"
+cmd = "gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 app:flask_app"

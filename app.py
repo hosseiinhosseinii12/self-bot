@@ -21,7 +21,16 @@ from selfbot.api import attach_api_routes                               # noqa: 
 from selfbot.bot_handlers import build_bot_runtime                      # noqa: E402
 
 # --- Locks & lifecycle ------------------------------------------------------
-acquire_lock()
+# Only one process should hold the file lock. Under Gunicorn with N workers,
+# this means only the first worker gets it; others skip booting the bot.
+try:
+    acquire_lock()
+    _HAS_LOCK = True
+except SystemExit:
+    _HAS_LOCK = False
+except Exception:
+    _HAS_LOCK = True  # non-fatal — continue
+
 
 _runtime = None
 _runtime_lock = threading.Lock()
@@ -66,7 +75,11 @@ def _ensure_started():
     t.start()
 
 
-_ensure_started()
+# Only boot if we hold the lock (single-worker scenario, or first worker wins)
+if _HAS_LOCK:
+    _ensure_started()
+else:
+    log_flask.info("skipping bot boot in this worker (lock held by another)")
 
 
 # --- Graceful shutdown ------------------------------------------------------
@@ -78,7 +91,10 @@ def _on_exit():
         shutdown_all(_get_runtime())
     except Exception as e:
         log.error(f"shutdown error: {e}")
-    release_lock()
+    try:
+        release_lock()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

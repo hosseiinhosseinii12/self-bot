@@ -10,6 +10,22 @@ from .config import DB_PATH
 _log_queue: "queue.Queue[logging.LogRecord]" = queue.Queue(-1)
 
 
+# ---------------------------------------------------------------------------
+# Ensure EVERY LogRecord has a 'service' attribute, even ones created by Flask
+# ---------------------------------------------------------------------------
+_original_factory = logging.getLogRecordFactory()
+
+
+def _record_factory(*args, **kwargs):
+    record = _original_factory(*args, **kwargs)
+    if not hasattr(record, "service"):
+        record.service = "self-bot"
+    return record
+
+
+logging.setLogRecordFactory(_record_factory)
+
+
 class ServiceAdapter(logging.LoggerAdapter):
     def process(self, msg, kwargs):
         extra = kwargs.setdefault("extra", {})
