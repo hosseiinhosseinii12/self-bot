@@ -10,6 +10,7 @@ import io
 import os
 import random
 import re
+import secrets
 import string
 import time
 from datetime import datetime, timezone as dt_timezone
@@ -42,7 +43,7 @@ except ImportError:
 
 
 # ===========================================================================
-# Helper functions used across handler registration
+# Job flow helpers
 # ===========================================================================
 def _job_interval_text(target_id: int) -> str:
     return (
@@ -220,7 +221,10 @@ class BotRuntime:
         })
 
     def save_state(self) -> None:
-        user_state_store.replace(self._state)
+        try:
+            user_state_store.replace(self._state)
+        except Exception:
+            pass
 
     def load_state(self) -> None:
         st = user_state_store.all() or {}
@@ -423,7 +427,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             st = rt.state_for(rt.owner_id)
             st["pending_target"] = int(chat_id)
             st["peer_request_open"] = False
-            st["awaiting"] = None
+            st["awaiting"] = {}
             draft = st.setdefault("job_draft", {})
             draft["target"] = int(chat_id)
             rt.set_recent_group(rt.owner_id, int(chat_id))
@@ -810,23 +814,30 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
 
     # ---- Navigation ----
     if data == "nav:main":
-        await edit(P.main_panel_text(uid), P.main_panel_buttons()); return
+        await edit(P.main_panel_text(uid), P.main_panel_buttons())
+        return
     if data == "nav:status":
-        await edit(P.status_text(uid), P.status_buttons()); return
+        await edit(P.status_text(uid), P.status_buttons())
+        return
     if data == "nav:settings":
-        await edit(P.settings_text(uid), P.settings_buttons()); return
+        await edit(P.settings_text(uid), P.settings_buttons())
+        return
     if data == "nav:appearance":
-        await edit(P.appearance_text(uid), P.appearance_buttons()); return
+        await edit(P.appearance_text(uid), P.appearance_buttons())
+        return
     if data == "nav:jobs":
         st["job_draft"] = {}
         st["awaiting"] = {}
         st["awaiting_peer"] = False
         rt.save_state()
-        await edit(P.jobs_text(uid), P.jobs_buttons()); return
+        await edit(P.jobs_text(uid), P.jobs_buttons())
+        return
     if data == "nav:account":
-        await edit(P.account_text(uid), P.account_buttons()); return
+        await edit(P.account_text(uid), P.account_buttons())
+        return
     if data == "nav:help":
-        await edit(P.help_text(), P.help_buttons()); return
+        await edit(P.help_text(), P.help_buttons())
+        return
 
     # ---- Web panel ----
     if data == "nav:webpanel":
@@ -857,7 +868,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             return
         U.update_user_settings(uid, clock_on=True)
         CLK.start_clock(client, uid)
-        await edit(P.main_panel_text(uid), P.main_panel_buttons()); return
+        await edit(P.main_panel_text(uid), P.main_panel_buttons())
+        return
 
     if data == "clock:off":
         client = rt.user_clients.get(uid)
@@ -865,7 +877,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             await CLK.stop_clock_async(client, uid)
         else:
             CLK.stop_clock(uid)
-        await edit(P.main_panel_text(uid), P.main_panel_buttons()); return
+        await edit(P.main_panel_text(uid), P.main_panel_buttons())
+        return
 
     # ---- Settings ----
     if data == "set:interval":
@@ -880,12 +893,14 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[P._back_btn(b"nav:settings")]])
         return
     if data == "set:language":
-        await edit(P.language_text(), P.language_buttons()); return
+        await edit(P.language_text(), P.language_buttons())
+        return
     if data.startswith("set:lang:"):
         lang = data.split(":")[-1]
         CONFIG["language"] = lang
         save_config(CONFIG)
-        await edit(P.language_text(), P.language_buttons()); return
+        await edit(P.language_text(), P.language_buttons())
+        return
 
     # ---- Appearance ----
     if data == "app:base":
@@ -893,6 +908,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         rt.save_state()
         await edit("✏️ Send new base name:", [[P._back_btn(b"nav:appearance")]])
         return
+
     if data == "app:namefont":
         from .fonts import NAME_FONTS
         rows = []
@@ -904,10 +920,13 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         rows.append([P._back_btn(b"nav:appearance")])
         await edit("**🔤 Pick a name font:**", rows)
         return
+
     if data.startswith("app:namefont:"):
         font = data.split(":")[-1]
         U.update_user_settings(uid, name_font=font)
-        await edit(P.appearance_text(uid), P.appearance_buttons()); return
+        await edit(P.appearance_text(uid), P.appearance_buttons())
+        return
+
     if data == "app:clockfont":
         from .fonts import DIGIT_FONTS
         rows = []
@@ -918,15 +937,20 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                                         style="primary")])
         rows.append([P._back_btn(b"nav:appearance")])
         await edit("**🕐 Pick a clock font:**", rows)
-        return    if data.startswith("app:clockfont:"):
+        return
+
+    if data.startswith("app:clockfont:"):
         font = data.split(":")[-1]
         U.update_user_settings(uid, clock_font=font)
-        await edit(P.appearance_text(uid), P.appearance_buttons()); return
+        await edit(P.appearance_text(uid), P.appearance_buttons())
+        return
+
     if data == "app:customname":
         st["awaiting"]["custom_name_font"] = True
         rt.save_state()
         await edit("🅰️ Send 26 characters for A–Z:", [[P._back_btn(b"nav:appearance")]])
         return
+
     if data == "app:customclock":
         st["awaiting"]["custom_clock_font"] = True
         rt.save_state()
@@ -957,7 +981,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         return
 
     if data == "job:group:select":
-        # Try native peer picker
         btn = None
         if P.HAS_PEER_PICKER:
             btn = P.make_peer_picker_button(
@@ -1009,7 +1032,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         draft = st.get("job_draft", {})
         target = draft.get("target")
         if not target:
-            await edit(_job_group_text(), _job_group_buttons()); return
+            await edit(_job_group_text(), _job_group_buttons())
+            return
 
         val = data.split(":")[2]
         if val == "custom":
@@ -1055,6 +1079,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         rt.save_state()
         await edit("📝 Send the message text now:", [[P._back_btn(b"job:setup:back")]])
         return
+
     if data == "job:text:upload":
         st["awaiting"]["job_text_file"] = True
         rt.save_state()
@@ -1156,7 +1181,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         return
 
     if data == "job:list":
-        await edit(P.jobs_text(uid), P.jobs_buttons()); return
+        await edit(P.jobs_text(uid), P.jobs_buttons())
+        return
     if data == "job:stopall":
         n = J.stop_all(owner_id=uid)
         await edit(f"⏹ Stopped {n} jobs.", [[P._back_btn(b"nav:jobs")]])
@@ -1186,14 +1212,16 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         )
         return
     if data == "acc:notify":
-        await edit(P.notify_text(), P.notify_buttons()); return
+        await edit(P.notify_text(), P.notify_buttons())
+        return
     if data.startswith("notify:"):
         key = data.split(":", 1)[1]
         u = U.get_user(uid) or {}
         n = (u.get("notify") or {})
         new_val = not bool(n.get(key, True))
         U.set_notify(uid, key, new_val)
-        await edit(P.notify_text(), P.notify_buttons()); return
+        await edit(P.notify_text(), P.notify_buttons())
+        return
 
 
 async def _handle_qr_login(rt: BotRuntime, uid: int, event) -> None:
