@@ -1,9 +1,9 @@
 """Telegram bot runtime — login-first with QR, per-user, group-first jobs.
 
-- Peer group selection via Telegram native UI
-- Fallback to manual chat_id entry
+- Peer group selection via Telegram native UI (KeyboardButtonRequestPeer)
+- Fallback to manual chat_id entry when peer picker unavailable
 - Per-user state, per-user sessions
-- Job creation with full validation + logging
+- DB-backed jobs (SQLite)
 """
 import asyncio
 import io
@@ -41,6 +41,160 @@ except ImportError:
     TelegramClient = None  # type: ignore
 
 
+# ===========================================================================
+# Helper functions used across handler registration
+# ===========================================================================
+def _job_interval_text(target_id: int) -> str:
+    return (
+        "**🔁 New Repeat Job**\n\n"
+        "**Step 2/4 — Interval**\n\n"
+        f"✅ Target: `{target_id}`\n\n"
+        "How often should the message be sent?"
+    )
+
+
+def _build_job_interval_buttons():
+    return [
+        [Button.inline("⚡ 1 min", b"job:interval:1", style="danger"),
+         Button.inline("🕐 5 min", b"job:interval:5", style="primary")],
+        [Button.inline("⏰ 15 min", b"job:interval:15", style="primary"),
+         Button.inline("🕓 30 min", b"job:interval:30", style="primary")],
+        [Button.inline("🕕 60 min", b"job:interval:60", style="primary")],
+        [Button.inline("✏️ Custom interval", b"job:interval:custom", style="success")],
+        [Button.inline("◀️ Back", b"job:setup:back")],
+    ]
+
+
+def _build_job_duration_buttons():
+    return [
+        [Button.inline("⏱ 1 min", b"job:duration:1", style="primary"),
+         Button.inline("⏱ 5 min", b"job:duration:5", style="primary")],
+        [Button.inline("⏱ 30 min", b"job:duration:30", style="primary"),
+         Button.inline("⏱ 1 hour", b"job:duration:60", style="primary")],
+        [Button.inline("⏱ 3 hours", b"job:duration:180", style="primary"),
+         Button.inline("⏱ 6 hours", b"job:duration:360", style="primary")],
+        [Button.inline("⏱ 12 hours", b"job:duration:720", style="primary")],
+        [Button.inline("♾ Unlimited (until stop)", b"job:duration:0", style="success")],
+        [Button.inline("✏️ Custom duration", b"job:duration:custom", style="success")],
+        [Button.inline("◀️ Back", b"job:setup:back")],
+    ]
+
+
+def _job_duration_text(target_id: int, interval_min: int) -> str:
+    return (
+        "**🔁 New Repeat Job**\n\n"
+        "**Step 3/4 — Duration**\n\n"
+        f"✅ Target: `{target_id}`\n"
+        f"✅ Interval: {interval_min} min\n\n"
+        "How long should the job run?\n\n"
+        "Tap **♾ Unlimited** to run until you stop it."
+    )
+
+
+def _job_text_buttons():
+    return [
+        [Button.inline("✏️ Enter text", b"job:text:enter", style="primary")],
+        [Button.inline("📎 Upload .txt", b"job:text:upload", style="success")],
+        [Button.inline("◀️ Back", b"job:setup:back")],
+    ]
+
+
+def _job_text_prompt(target_id: int = None, interval_s: int = 0,
+                     duration_m: int = 0) -> str:
+    lines = [
+        "**🔁 New Repeat Job**",
+        "",
+        "**Step 4/4 — Message**",
+        "",
+    ]
+    if target_id:
+        lines.append(f"✅ Target: `{target_id}`")
+    if interval_s:
+        lines.append(f"✅ Interval: {interval_s}s")
+    if duration_m is not None:
+        dur_str = "∞" if duration_m == 0 else f"{duration_m} min"
+        lines.append(f"✅ Duration: {dur_str}")
+    lines.append("")
+    lines.append("Send the text you want to repeat.")
+    lines.append("")
+    lines.append("**Variables:** `{time}` `{date}` `{job_id}` `{sent}` `{name}`")
+    return "\n".join(lines)
+
+
+def _job_confirm_text(job: dict) -> str:
+    from .economy import cost_job
+    interval = job.get("interval", 0)
+    duration = job.get("duration", 0)
+    text = job.get("text", "")
+    target = job.get("target")
+
+    duration_str = "∞ (unlimited)" if duration == 0 else f"{duration} min"
+
+    warnings = []
+    if target is None:
+        warnings.append("❌ No target group")
+    if interval < 60:
+        warnings.append("❌ Min interval: 60 seconds")
+    if not text:
+        warnings.append("❌ No message text set")
+    status = "\n".join(warnings) if warnings else "✅ Ready to start"
+
+    return (
+        "**🔁 Job Summary**\n\n"
+        f"🎯 **Target:** `{target if target else '— not selected —'}`\n"
+        f"⏱ **Interval:** `{interval}` s\n"
+        f"⏳ **Duration:** `{duration_str}`\n"
+        f"💸 **Cost:** `{cost_job()}` 💎\n\n"
+        f"📝 **Message:**\n`{text[:200] or '(empty)'}`\n\n"
+        f"{status}"
+    )
+
+
+def _job_confirm_buttons(job: dict):
+    interval = job.get("interval", 0)
+    text = job.get("text", "")
+    target = job.get("target")
+    can_start = (target is not None and interval >= 60 and text)
+    rows = []
+    if can_start:
+        rows.append([Button.inline("✅ Start job", b"job:confirm:start", style="success")])
+    else:
+        rows.append([Button.inline("⚠️ Cannot start", b"job:confirm:blocked", style="danger")])
+    rows.append([Button.inline("◀️ Back", b"job:setup:back")])
+    rows.append([Button.inline("❌ Cancel", b"nav:jobs", style="danger")])
+    return rows
+
+
+def _job_group_buttons(has_recent: bool = False):
+    rows = []
+    if has_recent:
+        rows.append([Button.inline("🔁 Reuse last group", b"job:group:reuse", style="primary")])
+    if P.HAS_PEER_PICKER:
+        rows.append([Button.inline("🎯 Select a group", b"job:group:select", style="success")])
+    else:
+        rows.append([Button.inline("✏️ Enter chat ID", b"job:group:manual", style="success")])
+    rows.append([Button.inline("◀️ Back", b"nav:jobs")])
+    return rows
+
+
+def _job_group_text(has_recent: bool = False, recent_id: int = None) -> str:
+    txt = (
+        "**🔁 New Repeat Job**\n\n"
+        "**Step 1/4 — Target group**\n\n"
+        "Which group should the messages be sent to?\n\n"
+    )
+    if P.HAS_PEER_PICKER:
+        txt += "Tap **🎯 Select a group** and pick from the Telegram UI."
+    else:
+        txt += "Tap **✏️ Enter chat ID** and send the group's ID."
+    if has_recent and recent_id:
+        txt += f"\n\n_Last used: `{recent_id}`_"
+    return txt
+
+
+# ===========================================================================
+# Runtime
+# ===========================================================================
 class BotRuntime:
     def __init__(self):
         self.bot_client: Optional[TelegramClient] = None
@@ -152,7 +306,6 @@ def _register_handlers(rt: BotRuntime) -> None:
         st["awaiting"] = {}
         st["awaiting_peer"] = False
         rt.save_state()
-        # close stale reply keyboard
         try:
             await event.respond(" ", buttons=Button.clear())
             try:
@@ -237,9 +390,9 @@ def _register_handlers(rt: BotRuntime) -> None:
         else:
             await event.respond("❌ Invalid or already-used referral code.")
 
-    # ---- raw peer selection ----
+    # ---- raw peer picker handler ----
     @bot.on(events.Raw)
-    async def _raw_peer_selection(update):
+    async def raw_handler(update):
         try:
             msg = getattr(update, "message", None)
             if msg is None:
@@ -258,43 +411,32 @@ def _register_handlers(rt: BotRuntime) -> None:
             if chat_id is None:
                 return
 
-            # Try every known attribute for the user id
-            uid = None
-            for attr in ("user_id", "from_id", "peer_id"):
-                v = getattr(msg, attr, None)
-                if v is None:
-                    continue
-                if hasattr(v, "user_id"):
-                    uid = int(v.user_id)
-                    break
-                if isinstance(v, int):
-                    uid = int(v)
-                    break
-            if uid is None:
-                uid = rt.owner_id
-
-            log_bot.info(f"peer selected by uid={uid}: chat_id={chat_id}")
-
-            rt.set_recent_group(uid, int(chat_id))
-            st = rt.state_for(uid)
-            st["awaiting_peer"] = False
-            draft = st.setdefault("job_draft", {})
-            draft["target"] = int(chat_id)
-            rt.save_state()
+            log_bot.info(f"peer picker: chat_id={chat_id}")
 
             try:
-                await bot.send_message(uid, "✅ Got it.", buttons=Button.clear())
+                await bot.send_message(
+                    rt.owner_id, "✅ Group selected.", buttons=Button.clear()
+                )
             except Exception:
                 pass
 
+            st = rt.state_for(rt.owner_id)
+            st["pending_target"] = int(chat_id)
+            st["peer_request_open"] = False
+            st["awaiting"] = None
+            draft = st.setdefault("job_draft", {})
+            draft["target"] = int(chat_id)
+            rt.set_recent_group(rt.owner_id, int(chat_id))
+            rt.save_state()
+
             await bot.send_message(
-                uid,
-                P.job_interval_text(int(chat_id)),
-                buttons=P.job_interval_buttons(),
+                rt.owner_id,
+                _job_interval_text(int(chat_id)),
+                buttons=_build_job_interval_buttons(),
                 parse_mode="md",
             )
         except Exception as e:
-            log_bot.error(f"peer selection handler error: {type(e).__name__}: {e}")
+            log_bot.error(f"raw_handler error: {type(e).__name__}: {e}")
 
     # ---- callbacks ----
     @bot.on(events.CallbackQuery())
@@ -340,9 +482,9 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
-        # ---- Job: manual chat_id ----
-        if awaiting.get("job_chat_id_manual"):
-            awaiting.pop("job_chat_id_manual", None)
+        # ---- manual chat_id ----
+        if awaiting.get("manual_chat_id"):
+            awaiting.pop("manual_chat_id", None)
             rt.save_state()
             try:
                 chat_id = int(text.strip())
@@ -350,16 +492,17 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("❌ Invalid chat ID. Send a number like `-1001234567890`.")
                 return
             rt.set_recent_group(uid, chat_id)
-            st.setdefault("job_draft", {})["target"] = chat_id
+            draft = st.setdefault("job_draft", {})
+            draft["target"] = chat_id
             rt.save_state()
             await event.respond(
-                P.job_interval_text(chat_id),
-                buttons=P.job_interval_buttons(),
+                _job_interval_text(chat_id),
+                buttons=_build_job_interval_buttons(),
                 parse_mode="md",
             )
             return
 
-        # ---- Job: interval custom ----
+        # ---- interval custom ----
         if awaiting.get("job_interval_custom"):
             awaiting.pop("job_interval_custom", None)
             rt.save_state()
@@ -372,49 +515,49 @@ def _register_handlers(rt: BotRuntime) -> None:
                 draft["interval"] = n
                 rt.save_state()
                 await event.respond(
-                    P.job_duration_text(draft.get("target"), n // 60 or 1),
-                    buttons=P.job_duration_buttons(),
+                    _job_duration_text(draft.get("target"), n // 60 or 1),
+                    buttons=_build_job_duration_buttons(),
                     parse_mode="md",
                 )
             except Exception:
                 await event.respond("❌ Invalid number.")
             return
 
-        # ---- Job: duration custom ----
+        # ---- duration custom ----
         if awaiting.get("job_duration_custom"):
             awaiting.pop("job_duration_custom", None)
             rt.save_state()
             try:
                 n = int(text)
-                if n < 1:
-                    await event.respond("⚠️ Minimum is 1 minute.")
+                if n < 0:
+                    await event.respond("⚠️ Send 0 (unlimited) or a positive number.")
                     return
                 draft = st.setdefault("job_draft", {})
                 draft["duration"] = n
                 rt.save_state()
                 await event.respond(
-                    P.job_text_prompt(draft.get("target"),
-                                       draft.get("interval", 0), n),
-                    buttons=P.job_text_buttons(),
+                    _job_text_prompt(draft.get("target"),
+                                      draft.get("interval", 0), n),
+                    buttons=_job_text_buttons(),
                     parse_mode="md",
                 )
             except Exception:
                 await event.respond("❌ Invalid number.")
             return
 
-        # ---- Job: text ----
+        # ---- job text ----
         if awaiting.get("job_text"):
             awaiting.pop("job_text", None)
             rt.save_state()
             draft = st.setdefault("job_draft", {})
             draft["text"] = text
             rt.save_state()
-            await event.respond(P.job_confirm_text(draft),
-                                buttons=P.job_confirm_buttons(draft),
+            await event.respond(_job_confirm_text(draft),
+                                buttons=_job_confirm_buttons(draft),
                                 parse_mode="md")
             return
 
-        # ---- Job: .txt ----
+        # ---- job text file ----
         if awaiting.get("job_text_file") and event.document:
             awaiting.pop("job_text_file", None)
             rt.save_state()
@@ -424,8 +567,8 @@ def _register_handlers(rt: BotRuntime) -> None:
                 draft = st.setdefault("job_draft", {})
                 draft["text"] = file_text
                 rt.save_state()
-                await event.respond(P.job_confirm_text(draft),
-                                    buttons=P.job_confirm_buttons(draft),
+                await event.respond(_job_confirm_text(draft),
+                                    buttons=_job_confirm_buttons(draft),
                                     parse_mode="md")
             except Exception as e:
                 await event.respond(f"❌ Could not read file: {e}")
@@ -775,8 +918,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                                         style="primary")])
         rows.append([P._back_btn(b"nav:appearance")])
         await edit("**🕐 Pick a clock font:**", rows)
-        return
-    if data.startswith("app:clockfont:"):
+        return    if data.startswith("app:clockfont:"):
         font = data.split(":")[-1]
         U.update_user_settings(uid, clock_font=font)
         await edit(P.appearance_text(uid), P.appearance_buttons()); return
@@ -800,48 +942,66 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         st["awaiting_peer"] = False
         rt.save_state()
         recent = rt.recent_group(uid)
-        await edit(P.job_group_text(has_recent=recent is not None,
-                                     recent_id=recent),
-                   P.job_group_buttons(has_recent=recent is not None))
+        await edit(_job_group_text(has_recent=recent is not None, recent_id=recent),
+                   _job_group_buttons(has_recent=recent is not None))
         return
 
     if data == "job:group:reuse":
         recent = rt.recent_group(uid)
         if not recent:
-            await edit(P.job_group_text(), P.job_group_buttons())
+            await edit(_job_group_text(), _job_group_buttons())
             return
         st.setdefault("job_draft", {})["target"] = recent
         rt.save_state()
-        await edit(P.job_interval_text(recent), P.job_interval_buttons())
+        await edit(_job_interval_text(recent), _build_job_interval_buttons())
         return
 
     if data == "job:group:select":
-        kb = P.group_selector_reply_keyboard()
-        if kb is None:
-            st["awaiting"]["job_chat_id_manual"] = True
+        # Try native peer picker
+        btn = None
+        if P.HAS_PEER_PICKER:
+            btn = P.make_peer_picker_button(
+                button_id=secrets.randbelow(10**6),
+                label="🎯 Group",
+            )
+        if btn is None:
+            st["awaiting"]["manual_chat_id"] = True
             rt.save_state()
             await edit(
-                "**🎯 Manual group entry**\n\n"
-                "Your Telegram client doesn't support the group picker.\n\n"
-                "Send the group's chat ID (e.g. `-1001234567890`).\n\n"
-                "**How to find it:**\n"
-                "Forward a message from the group to @userinfobot — it will show the ID.",
+                "**🎯 Enter group chat ID**\n\n"
+                "Send the ID here, e.g. `-1001234567890`.\n\n"
+                "_Tip: forward a message from the group to @userinfobot._",
                 [[P._back_btn(b"nav:jobs")]],
             )
             return
         st["awaiting_peer"] = True
         rt.save_state()
         try:
-            await bot.send_message(event.chat_id, P.group_selector_text(), buttons=kb)
+            await bot.send_message(
+                event.chat_id,
+                "**🎯 Select Target Group**\n\n"
+                "Tap the **🎯 Group** button below the input field, then pick a group.",
+                buttons=[[btn]], parse_mode="md",
+            )
         except Exception as e:
-            log_bot.warning(f"failed to send peer selector: {e}")
-            st["awaiting"]["job_chat_id_manual"] = True
+            log_bot.error(f"peer picker send failed: {type(e).__name__}: {e}")
+            st["awaiting"]["manual_chat_id"] = True
             rt.save_state()
             await edit(
-                "**🎯 Manual group entry**\n\n"
-                "Send the group's chat ID (e.g. `-1001234567890`).",
+                "**🎯 Enter group chat ID**\n\nSend e.g. `-1001234567890`.",
                 [[P._back_btn(b"nav:jobs")]],
             )
+        return
+
+    if data == "job:group:manual":
+        st["awaiting"]["manual_chat_id"] = True
+        rt.save_state()
+        await edit(
+            "**🎯 Enter group chat ID**\n\n"
+            "Send the ID here, e.g. `-1001234567890`.\n\n"
+            "_Tip: forward a message from the group to @userinfobot._",
+            [[P._back_btn(b"nav:jobs")]],
+        )
         return
 
     # ---- Interval ----
@@ -849,7 +1009,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         draft = st.get("job_draft", {})
         target = draft.get("target")
         if not target:
-            await edit(P.job_group_text(), P.job_group_buttons()); return
+            await edit(_job_group_text(), _job_group_buttons()); return
 
         val = data.split(":")[2]
         if val == "custom":
@@ -864,8 +1024,8 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             return
         draft["interval"] = interval_min * 60
         rt.save_state()
-        await edit(P.job_duration_text(target, interval_min),
-                   P.job_duration_buttons())
+        await edit(_job_duration_text(target, interval_min),
+                   _build_job_duration_buttons())
         return
 
     # ---- Duration ----
@@ -875,7 +1035,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         if val == "custom":
             st["awaiting"]["job_duration_custom"] = True
             rt.save_state()
-            await edit("**Custom duration**\n\nSend a number (minutes):",
+            await edit("**Custom duration**\n\nSend minutes, or 0 for unlimited:",
                        [[P._back_btn(b"job:setup:back")]])
             return
         try:
@@ -884,11 +1044,9 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             return
         draft["duration"] = duration
         rt.save_state()
-        await edit(
-            P.job_text_prompt(draft.get("target"),
-                               draft.get("interval", 0), duration),
-            P.job_text_buttons(),
-        )
+        await edit(_job_text_prompt(draft.get("target"),
+                                     draft.get("interval", 0), duration),
+                   _job_text_buttons())
         return
 
     # ---- Message ----
@@ -900,10 +1058,11 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "job:text:upload":
         st["awaiting"]["job_text_file"] = True
         rt.save_state()
-        await edit("📎 Send a `.txt` file with the message:", [[P._back_btn(b"job:setup:back")]])
+        await edit("📎 Send a `.txt` file with the message:",
+                   [[P._back_btn(b"job:setup:back")]])
         return
 
-    # ---- Confirm & start ----
+    # ---- Confirm ----
     if data == "job:confirm:start":
         draft = st.get("job_draft", {})
         interval = draft.get("interval", 0)
@@ -921,10 +1080,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             return
         if interval < 60:
             await edit("❌ Interval too small (min 60s).",
-                       [[P._back_btn(b"job:setup:back")]])
-            return
-        if duration > 720:
-            await edit("❌ Duration too large (max 720 min).",
                        [[P._back_btn(b"job:setup:back")]])
             return
         if not text:
@@ -958,18 +1113,13 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         st["job_draft"] = {}
         rt.save_state()
 
-        try:
-            now_jobs = J.active_jobs(owner_id=uid)
-            log_bot.info(f"active jobs for uid={uid}: {len(now_jobs)}")
-        except Exception as e:
-            log_bot.warning(f"active_jobs check failed: {e}")
-
+        dur_str = "∞ (unlimited)" if duration == 0 else f"{duration} min"
         await edit(
             f"✅ **Job started!**\n\n"
             f"🆔 `{job_id}`\n"
             f"🎯 Target: `{target}`\n"
             f"⏱ Interval: `{interval}` s\n"
-            f"⏳ Duration: `{duration}` min\n\n"
+            f"⏳ Duration: `{dur_str}`\n\n"
             f"_First message goes out in a moment._",
             [[Button.inline("📋 Jobs", b"nav:jobs", style="primary")]],
         )
@@ -977,37 +1127,32 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
 
     if data == "job:setup:back":
         draft = st.get("job_draft", {})
-        if draft.get("text") is not None and draft.get("duration"):
+        if draft.get("text") is not None and "duration" in draft:
             draft.pop("text", None)
             rt.save_state()
-            await edit(
-                P.job_text_prompt(draft.get("target"),
-                                   draft.get("interval", 0),
-                                   draft.get("duration", 0)),
-                P.job_text_buttons(),
-            )
+            await edit(_job_text_prompt(draft.get("target"),
+                                         draft.get("interval", 0),
+                                         draft.get("duration", 0)),
+                       _job_text_buttons())
             return
-        if draft.get("duration"):
+        if "duration" in draft:
             draft.pop("duration", None)
             rt.save_state()
-            await edit(
-                P.job_duration_text(draft.get("target"),
-                                     draft.get("interval", 60) // 60 or 1),
-                P.job_duration_buttons(),
-            )
+            await edit(_job_duration_text(draft.get("target"),
+                                           draft.get("interval", 60) // 60 or 1),
+                       _build_job_duration_buttons())
             return
         if draft.get("interval"):
             draft.pop("interval", None)
             rt.save_state()
-            await edit(P.job_interval_text(draft.get("target")),
-                       P.job_interval_buttons())
+            await edit(_job_interval_text(draft.get("target")),
+                       _build_job_interval_buttons())
             return
         st["job_draft"] = {}
         rt.save_state()
         recent = rt.recent_group(uid)
-        await edit(P.job_group_text(has_recent=recent is not None,
-                                     recent_id=recent),
-                   P.job_group_buttons(has_recent=recent is not None))
+        await edit(_job_group_text(has_recent=recent is not None, recent_id=recent),
+                   _job_group_buttons(has_recent=recent is not None))
         return
 
     if data == "job:list":
