@@ -12,4 +12,5 @@ tzdata
 aiosqlite
 pyotp
 qrcode
+pillow
 pytest

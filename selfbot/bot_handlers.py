@@ -1,5 +1,6 @@
 """Telegram bot runtime: bot + user clients, all handlers, watchdog."""
 import asyncio
+import io
 import random
 import string
 import time
@@ -22,6 +23,7 @@ from . import users as U
 from . import rich_msg as RM
 from . import clock as CLK
 from . import shop as SHOP
+from . import qr_login as QRL
 
 try:
     from telethon import Button, TelegramClient, events
@@ -52,8 +54,11 @@ class BotRuntime:
         self._pending_targets: dict = {}
         self._awaiting: dict = {}
         self._peer_request_open: bool = False
+        # QR login state
+        self._qr_client = None
+        self._qr_token_hex: Optional[str] = None
+        self._qr_expires_at: float = 0.0
 
-    # --- persistence of pending state --------------------------------------
     def save_state(self) -> None:
         user_state_store.update({
             "pending_targets": self._pending_targets,
@@ -69,15 +74,12 @@ class BotRuntime:
 
 
 # ===========================================================================
-# Pairing
+# Helpers
 # ===========================================================================
 def _gen_pairing_code() -> str:
     return "".join(random.choices(string.digits, k=6))
 
 
-# ===========================================================================
-# Owner guard + rate limit + ban
-# ===========================================================================
 def _owner_only(runtime: BotRuntime):
     def deco(fn):
         async def wrapper(event, *a, **kw):
@@ -100,7 +102,6 @@ def _owner_only(runtime: BotRuntime):
 
 
 def _guarded(runtime: BotRuntime):
-    """Ban + rate limit guard for non-owner handlers."""
     def deco(fn):
         async def wrapper(event, *a, **kw):
             uid = event.sender_id or 0
@@ -119,9 +120,6 @@ def _guarded(runtime: BotRuntime):
     return deco
 
 
-# ===========================================================================
-# Callback answer helper (never blocks >10s, never raises)
-# ===========================================================================
 async def _safe_answer(event, text: str = "", alert: bool = False) -> None:
     try:
         await asyncio.wait_for(event.answer(text, alert=alert), timeout=5.0)
@@ -130,7 +128,7 @@ async def _safe_answer(event, text: str = "", alert: bool = False) -> None:
 
 
 # ===========================================================================
-# Build the runtime and register handlers
+# Runtime builder
 # ===========================================================================
 def build_bot_runtime() -> BotRuntime:
     rt = BotRuntime()
@@ -139,6 +137,9 @@ def build_bot_runtime() -> BotRuntime:
     return rt
 
 
+# ===========================================================================
+# Handler registration
+# ===========================================================================
 def _register_handlers(rt: BotRuntime) -> None:
     bot = rt.bot_client
     if bot is None:
@@ -300,7 +301,7 @@ def _register_handlers(rt: BotRuntime) -> None:
     @_owner_only(rt)
     async def _on(event):
         if not rt.user_client:
-            await event.respond("No user session. Use /login first.")
+            await event.respond("No user session. Use /login (or Account → QR Login) first.")
             return
         CONFIG["clock_on"] = True
         save_config(CONFIG)
@@ -333,7 +334,6 @@ def _register_handlers(rt: BotRuntime) -> None:
     @bot.on(events.NewMessage(pattern=r"^\.rep\s+(\d+)\s+(\d+)\s+(.+)$"))
     @_owner_only(rt)
     async def _rep(event):
-        # owner-only in bot DM only
         if event.chat_id != rt.owner_id:
             return
         interval = int(event.pattern_match.group(1))
@@ -365,7 +365,6 @@ def _register_handlers(rt: BotRuntime) -> None:
     @bot.on(events.CallbackQuery())
     @_guarded(rt)
     async def _cb(event):
-        # answer immediately (once)
         await _safe_answer(event)
         data = event.data.decode() if event.data else ""
         try:
@@ -375,7 +374,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         except Exception as e:
             log_bot.warning(f"callback error data={data}: {e}")
 
-    # --- text message router (for awaiting inputs) ------------------------
+    # --- text router (for awaiting inputs) --------------------------------
     @bot.on(events.NewMessage())
     @_guarded(rt)
     async def _text(event):
@@ -384,6 +383,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         if event.raw_text.startswith(("/", ".")):
             return
         state = rt._awaiting
+
         if state.get("phone"):
             state.pop("phone", None)
             rt.save_state()
@@ -485,7 +485,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         except MessageNotModifiedError:
             pass
         except Exception:
-            # fall back to a fresh send
             try:
                 await bot.send_message(event.chat_id, text, buttons=buttons)
             except Exception:
@@ -623,6 +622,10 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         U.set_notify(rt.owner_id, key, new_val)
         await edit(P.notify_text(), P.notify_buttons()); return
 
+    # QR login
+    if data == "acc:qrlogin":
+        await _handle_qr_login(rt, event); return
+
     # memory
     if data == "mem:view":
         from .store import memory_store
@@ -648,7 +651,56 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
 
 
 # ===========================================================================
-# Login flow
+# QR login handler
+# ===========================================================================
+async def _handle_qr_login(rt: BotRuntime, event) -> None:
+    """Start QR login and send the QR image to the owner."""
+    bot = rt.bot_client
+
+    try:
+        ok, msg, png, expires_at = await QRL.start_qr_login(rt)
+    except Exception as e:
+        log_bot.error(f"QR login failed: {e}")
+        try:
+            await bot.send_message(event.chat_id, f"QR login failed: {e}")
+        except Exception:
+            pass
+        return
+
+    if not ok:
+        try:
+            await bot.send_message(event.chat_id, f"QR login error: {msg}")
+        except Exception:
+            pass
+        return
+
+    try:
+        remaining = max(0, int(expires_at - time.time()))
+        caption = (
+            "🔐 **QR Code Login**\n\n"
+            "1. Open **Telegram** on your phone (the official app, not this bot).\n"
+            "2. Go to **Settings → Devices → Link Desktop Device**.\n"
+            "3. Scan this QR code.\n\n"
+            f"⏱ Expires in {remaining} seconds.\n"
+            "Send /login again if it expires."
+        )
+        await bot.send_file(
+            event.chat_id,
+            io.BytesIO(png),
+            caption=caption,
+            parse_mode="md",
+            force_document=False,
+        )
+    except Exception as e:
+        log_bot.error(f"QR image send failed: {e}")
+        try:
+            await bot.send_message(event.chat_id, f"Failed to send QR image: {e}")
+        except Exception:
+            pass
+
+
+# ===========================================================================
+# Login flow (phone + code)
 # ===========================================================================
 async def _do_login(rt: BotRuntime, event) -> None:
     phone = rt._pending_targets.get("phone")
@@ -694,7 +746,7 @@ async def _do_login(rt: BotRuntime, event) -> None:
 
 
 # ===========================================================================
-# Watchdog (auto-reconnect every 30s)
+# Watchdog
 # ===========================================================================
 async def _watchdog(rt: BotRuntime) -> None:
     while not rt.stop_event.is_set():

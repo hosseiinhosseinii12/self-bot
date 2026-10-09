@@ -31,18 +31,35 @@ def main_panel_buttons() -> List[List]:
 
 def main_panel_text() -> str:
     from .clock import last_written
+    from .economy import cost_clock, cost_job, get_balance
+
+    owner = int(CONFIG.get("owner_id", 338266658))
     state = "🟢 ON" if CONFIG.get("clock_on") else "🔴 OFF"
     base = CONFIG.get("base_name", "User")
     interval = CONFIG.get("interval", 5)
     tz = CONFIG.get("timezone", "UTC")
     last = last_written() or "—"
+    plan = effective_plan(owner)
+    bal = get_balance(owner)
+
+    if plan in ("free", "basic"):
+        costs = (
+            f"Clock update: {cost_clock()} 💎  •  "
+            f"New job: {cost_job()} 💎  •  "
+            f"Job message: 1 💎"
+        )
+    else:
+        costs = f"Plan `{plan}` — no diamond cost per update."
+
     return (
         f"**{t('main_panel')}**\n\n"
         f"Clock: {state}\n"
         f"{t('interval')}: {interval} min\n"
         f"{t('timezone')}: {tz}\n"
         f"{t('base_name')}: `{base}`\n"
-        f"Last name: `{last}`"
+        f"Last name: `{last}`\n\n"
+        f"💎 Balance: **{bal}**  •  Plan: **{plan}**\n"
+        f"{costs}"
     )
 
 
@@ -134,6 +151,8 @@ def jobs_buttons() -> List[List]:
 def jobs_text() -> str:
     from .jobs import active_jobs, active_count
     from .subscriptions import plan_limits
+    from .economy import cost_job
+
     owner = int(CONFIG.get("owner_id", 338266658))
     lim = plan_limits(owner)
     lines = [f"**{t('btn_jobs')}**", ""]
@@ -145,6 +164,8 @@ def jobs_text() -> str:
             lines.append(
                 f"• `{j['id']}` every {j['interval']}s for {j['duration']}m — {j['sent']} sent"
             )
+    lines.append("")
+    lines.append(f"Cost per new job: **{cost_job()} 💎**")
     lines.append("")
     lines.append(
         f"Plan: {effective_plan(owner)} — max jobs {lim['max_jobs']}, "
@@ -163,21 +184,25 @@ def account_buttons() -> List[List]:
         [Button.inline("📜 " + t("my_requests"), b"acc:myreq")],
         [Button.inline("🤝 " + t("your_referral").split(":")[0], b"acc:referral")],
         [Button.inline("🔔 " + t("notify_prefs"), b"acc:notify")],
+        [Button.inline("🔐 QR Login", b"acc:qrlogin")],
         [Button.inline(t("btn_back"), b"nav:main")],
     ]
 
 
 def account_text() -> str:
+    from .economy import cost_clock, cost_job, get_balance
+
     owner = int(CONFIG.get("owner_id", 338266658))
     u = get_user(owner) or {}
     plan = effective_plan(owner)
     days = days_left(owner)
-    bal = int(u.get("diamonds", 0))
+    bal = get_balance(owner)
     return (
         f"**{t('btn_account')}**\n\n"
-        f"{t('diamonds')}: {bal} 💎\n"
+        f"{t('diamonds')}: **{bal}** 💎\n"
         f"{t('plan')}: {plan}\n"
-        f"{t('days_left')}: {days}\n"
+        f"{t('days_left')}: {days}\n\n"
+        f"Costs: clock update {cost_clock()} 💎, new job {cost_job()} 💎\n\n"
         f"{t('your_referral', code=u.get('referral_code', '—'))}"
     )
 
@@ -218,9 +243,9 @@ def help_text() -> str:
         "**Help**\n\n"
         "Commands:\n"
         "/start — main panel\n"
-        "/login — log in to a Telegram account\n"
+        "/login — log in to a Telegram account (phone → code)\n"
         "/logout — delete session\n"
-        "/account — diamonds + subscription\n"
+        "/account — diamonds + subscription + QR Login\n"
         "/request — request diamonds or subscription\n"
         "/myrequests — list your requests\n"
         "/refer <code> — apply referral code\n"
@@ -233,6 +258,9 @@ def help_text() -> str:
         "/off — disable clock\n"
         "/status — show current state\n"
         "/memory — memory tools\n\n"
+        "QR Login:\n"
+        "Account → 🔐 QR Login — scan with the official Telegram app\n"
+        "(no SMS needed)\n\n"
         "Repeat jobs (owner only, in bot DM):\n"
         "`.rep <seconds> <minutes> <text>` — start a repeat job\n"
         "`.stop` — stop jobs in this chat"
