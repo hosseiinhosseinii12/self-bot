@@ -1,19 +1,29 @@
 """QR Code Login flow for Telegram.
 
-Uses Telethon's ExportLoginTokenRequest to produce a QR URL, renders it
-as a PNG, and lets the owner scan it with the official Telegram app.
+Uses Telethon's native client.qr_login() when available, falls back to
+manual ExportLoginTokenRequest if the native method is missing.
+
+IMPORTANT: every import is guarded so we can report *which* one fails.
 """
 import asyncio
 import base64
 import io
 import time
+import traceback
 from typing import Optional
 
 from .config import CONFIG, DB_PATH, get_api_credentials
 from .logging_setup import log_bot
 from .store import user_state_store
 
+# ===========================================================================
+# Diagnostics — find out exactly what fails
+# ===========================================================================
+TELETHON_ERROR: Optional[str] = None
+QRCODE_ERROR: Optional[str] = None
+
 try:
+    import telethon  # noqa: F401
     from telethon import TelegramClient
     from telethon.errors import SessionPasswordNeededError
     from telethon.tl.functions.auth import (ExportLoginTokenRequest,
@@ -22,53 +32,62 @@ try:
                                     AuthLoginTokenMigrateTo,
                                     AuthLoginTokenSuccess)
     HAS_TELETHON = True
-except ImportError:
+except Exception as _e:
     HAS_TELETHON = False
+    TELETHON_ERROR = f"{type(_e).__name__}: {_e}"
+    log_bot.error(f"qr_login: telethon import failed — {TELETHON_ERROR}")
 
 try:
     import qrcode  # type: ignore
     HAS_QRCODE = True
-except ImportError:
+except Exception as _e:
     HAS_QRCODE = False
+    QRCODE_ERROR = f"{type(_e).__name__}: {_e}"
+    log_bot.warning(f"qr_login: qrcode import failed — {QRCODE_ERROR}")
 
 
-# ---------------------------------------------------------------------------
-# Render a QR URL to PNG bytes
-# ---------------------------------------------------------------------------
+def diagnose() -> dict:
+    """Return a dict describing which dependency is missing."""
+    return {
+        "telethon": HAS_TELETHON,
+        "telethon_error": TELETHON_ERROR,
+        "qrcode": HAS_QRCODE,
+        "qrcode_error": QRCODE_ERROR,
+    }
+
+
+# ===========================================================================
+# PNG rendering
+# ===========================================================================
 def _render_qr_png(url: str) -> bytes:
     if not HAS_QRCODE:
         return b""
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=8,
-        border=2,
-    )
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+    try:
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception as e:
+        log_bot.error(f"qr png render failed: {e}")
+        return b""
 
 
-# ---------------------------------------------------------------------------
-# Persist QR session state
-# ---------------------------------------------------------------------------
-def _save_qr_state(token_bytes_hex: str, expires_at: float) -> None:
-    user_state_store.set("qr_login", {
-        "token": token_bytes_hex,
-        "expires_at": expires_at,
-    })
-
-
-def _load_qr_state() -> Optional[dict]:
-    st = user_state_store.get("qr_login")
-    if not isinstance(st, dict):
-        return None
-    if st.get("expires_at", 0) < time.time():
-        return None
-    return st
+# ===========================================================================
+# State persistence
+# ===========================================================================
+def _save_qr_state(expires_at: float) -> None:
+    try:
+        user_state_store.set("qr_login", {"expires_at": expires_at})
+    except Exception:
+        pass
 
 
 def _clear_qr_state() -> None:
@@ -78,166 +97,240 @@ def _clear_qr_state() -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Start QR login
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Public API
+# ===========================================================================
 async def start_qr_login(runtime) -> tuple:
-    """Start QR login. Returns (ok, message, png_bytes, expires_at)."""
+    """Start QR login. Returns (ok: bool, msg_or_url: str, png: bytes, expires_at: float).
+
+    If ok is True: msg is the tg:// URL, png is the QR image, expires_at is epoch.
+    If ok is False: msg is the error message.
+    """
+    # --- dependency checks with clear messages ---
     if not HAS_TELETHON:
-        return False, "Telethon not available.", b"", 0
+        return False, f"Telethon import failed: {TELETHON_ERROR or 'unknown'}", b"", 0
     if not HAS_QRCODE:
-        return False, "qrcode library not installed.", b"", 0
+        return False, f"qrcode import failed: {QRCODE_ERROR or 'not installed'}", b"", 0
 
     api_id, api_hash = get_api_credentials()
 
-    # Use existing user_client or create a fresh (proxy-aware) one
-    client = runtime.user_client
+    # --- build a proxy-aware client ---
+    client = getattr(runtime, "user_client", None)
     fresh = False
     if client is None:
         try:
             from .bootstrap import make_user_client_for_login
             client = await make_user_client_for_login()
+            fresh = True
         except Exception as e:
-            log_bot.error(f"could not create user client for QR: {e}")
-            return False, f"Failed to create client: {e}", b"", 0
-        fresh = True
+            log_bot.error(f"qr: failed to create user client: {e}")
+            return False, f"Failed to create client: {type(e).__name__}: {e}", b"", 0
 
-    try:
-        result = await client(ExportLoginTokenRequest(
-            api_id=api_id,
-            api_hash=api_hash,
-            except_ids=[],
-        ))
-    except Exception as e:
-        log_bot.error(f"QR export token failed: {e}")
-        if fresh:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-        return False, f"Failed to start QR login: {e}", b"", 0
+    # --- try native client.qr_login() first ---
+    qr_url = None
+    qr_obj = None
+    expires_at = time.time() + 60.0
 
-    if isinstance(result, AuthLoginTokenSuccess):
-        runtime.user_client = client
-        _clear_qr_state()
-        return True, "Already logged in.", b"", 0
-
-    if isinstance(result, AuthLoginTokenMigrateTo):
+    if hasattr(client, "qr_login"):
         try:
-            dc_id = result.dc_id
-            await client.disconnect()
-            await client.connect(dc_id)
+            qr_obj = await client.qr_login()
+            qr_url = getattr(qr_obj, "url", None)
+            log_bot.info(f"qr: native client.qr_login() ok, url={qr_url!r}")
+        except Exception as e:
+            log_bot.warning(f"qr: native client.qr_login() failed: {e}")
+            qr_obj = None
+            qr_url = None
+
+    # --- fallback to manual ExportLoginTokenRequest ---
+    if qr_url is None:
+        try:
             result = await client(ExportLoginTokenRequest(
                 api_id=api_id,
                 api_hash=api_hash,
                 except_ids=[],
             ))
         except Exception as e:
-            log_bot.error(f"QR migrate failed: {e}")
+            log_bot.error(f"qr: ExportLoginTokenRequest failed: {e}")
             if fresh:
                 try:
                     await client.disconnect()
                 except Exception:
                     pass
-            return False, f"QR migrate failed: {e}", b"", 0
+            return False, f"Failed to export login token: {type(e).__name__}: {e}", b"", 0
 
-    if not isinstance(result, AuthLoginToken):
-        if fresh:
+        if isinstance(result, AuthLoginTokenSuccess):
+            runtime.user_client = client
+            _clear_qr_state()
+            return True, "Already logged in.", b"", 0
+
+        if isinstance(result, AuthLoginTokenMigrateTo):
             try:
                 await client.disconnect()
-            except Exception:
-                pass
-        return False, "Unexpected response from Telegram.", b"", 0
+                await client.connect(result.dc_id)
+                result = await client(ExportLoginTokenRequest(
+                    api_id=api_id, api_hash=api_hash, except_ids=[],
+                ))
+            except Exception as e:
+                if fresh:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                return False, f"DC migrate failed: {e}", b"", 0
 
-    token_b64 = base64.urlsafe_b64encode(result.token).rstrip(b"=").decode()
-    url = f"tg://login?token={token_b64}"
-    expires_at = float(result.expires)
+        if not isinstance(result, AuthLoginToken):
+            if fresh:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            return False, "Unexpected response from Telegram.", b"", 0
 
-    png = _render_qr_png(url)
+        token_b64 = base64.urlsafe_b64encode(result.token).rstrip(b"=").decode()
+        qr_url = f"tg://login?token={token_b64}"
+        expires_at = float(result.expires)
+        # Start manual polling for this fallback path
+        asyncio.create_task(_poll_manual(runtime, client, api_id, api_hash))
+
+    # --- render PNG ---
+    png = _render_qr_png(qr_url)
     if not png:
         if fresh:
             try:
                 await client.disconnect()
             except Exception:
                 pass
-        return False, "Failed to render QR image.", b"", 0
+        return False, "Failed to render QR PNG.", b"", 0
 
+    # --- persist state ---
     runtime._qr_client = client
-    runtime._qr_token_hex = result.token.hex()
     runtime._qr_expires_at = expires_at
-    _save_qr_state(result.token.hex(), expires_at)
+    _save_qr_state(expires_at)
 
-    log_bot.info(f"QR login started, expires at {expires_at}")
+    # If we used native client.qr_login(), start its waiter
+    if qr_obj is not None:
+        asyncio.create_task(_wait_native(runtime, qr_obj))
 
-    asyncio.create_task(_poll_qr_login(runtime))
+    log_bot.info(f"qr: started (expires_at={expires_at})")
+    return True, qr_url, png, expires_at
 
-    return True, url, png, expires_at
 
+# ===========================================================================
+# Native waiter (client.qr_login())
+# ===========================================================================
+async def _wait_native(runtime, qr_obj) -> None:
+    owner_id = int(CONFIG.get("owner_id", 338266658))
+    client = runtime._qr_client
 
-# ---------------------------------------------------------------------------
-# Polling loop
-# ---------------------------------------------------------------------------
-async def _poll_qr_login(runtime) -> None:
-    """Poll Telegram every 3s until the QR is accepted or expires."""
-    client = getattr(runtime, "_qr_client", None)
-    if client is None:
+    try:
+        await asyncio.wait_for(qr_obj.wait(), timeout=90.0)
+    except asyncio.TimeoutError:
+        await _notify(runtime, owner_id, "⏱ QR code expired. Send /login to try again.")
+        _clear_qr_state()
+        return
+    except SessionPasswordNeededError:
+        await _notify(runtime, owner_id,
+                      "✅ QR scanned. 🔐 2FA required.\nSend your 2FA password now.")
+        runtime._qr_needs_2fa = True
+        # Attach password submission to next text message
+        rt_state = getattr(runtime, "_state", {})
+        rt_state.setdefault("awaiting", {})["qr_2fa_password"] = True
+        try:
+            runtime.save_state()
+        except Exception:
+            pass
+        return
+    except Exception as e:
+        log_bot.error(f"qr wait_native failed: {type(e).__name__}: {e}")
+        await _notify(runtime, owner_id, f"❌ QR login failed: {e}")
+        _clear_qr_state()
         return
 
-    api_id, api_hash = get_api_credentials()
-    owner_id = int(CONFIG.get("owner_id", 338266658))
+    # Success
+    runtime.user_client = client
+    _clear_qr_state()
+    log_bot.info("qr: login succeeded (no 2FA)")
+    await _notify(runtime, owner_id,
+                  "✅ Logged in via QR code.\nYou can now use /on, /name, etc.")
+    try:
+        if CONFIG.get("clock_on"):
+            from .clock import start_clock
+            start_clock(client)
+    except Exception:
+        pass
 
+
+# ===========================================================================
+# Manual poller (fallback path)
+# ===========================================================================
+async def _poll_manual(runtime, client, api_id: int, api_hash: str) -> None:
+    owner_id = int(CONFIG.get("owner_id", 338266658))
     while True:
         if time.time() > getattr(runtime, "_qr_expires_at", 0):
-            log_bot.info("QR login expired")
-            try:
-                if runtime.bot_client:
-                    await runtime.bot_client.send_message(
-                        owner_id,
-                        "QR code expired. Send /login to try again.",
-                    )
-            except Exception:
-                pass
+            await _notify(runtime, owner_id, "⏱ QR code expired. Send /login to try again.")
             _clear_qr_state()
             return
-
         await asyncio.sleep(3)
-
         try:
             result = await client(ExportLoginTokenRequest(
-                api_id=api_id,
-                api_hash=api_hash,
-                except_ids=[],
+                api_id=api_id, api_hash=api_hash, except_ids=[],
             ))
         except Exception as e:
-            log_bot.debug(f"QR poll error: {e}")
+            log_bot.debug(f"qr poll error: {e}")
             continue
 
         if isinstance(result, AuthLoginTokenSuccess):
             runtime.user_client = client
             _clear_qr_state()
-            log_bot.info("QR login succeeded")
-
-            try:
-                if runtime.bot_client:
-                    await runtime.bot_client.send_message(
-                        owner_id,
-                        "✅ Logged in via QR code. You can now use /on, /name, etc.",
-                    )
-            except Exception:
-                pass
+            log_bot.info("qr: login succeeded (manual poll)")
+            await _notify(runtime, owner_id,
+                          "✅ Logged in via QR code.\nYou can now use /on, /name, etc.")
             return
 
         if isinstance(result, AuthLoginTokenMigrateTo):
             try:
                 await client.disconnect()
                 await client.connect(result.dc_id)
-            except Exception as e:
-                log_bot.warning(f"QR poll migrate failed: {e}")
+            except Exception:
+                pass
             continue
 
         if isinstance(result, AuthLoginToken):
-            token_b64 = base64.urlsafe_b64encode(result.token).rstrip(b"=").decode()
-            runtime._qr_token_hex = result.token.hex()
             runtime._qr_expires_at = float(result.expires)
-            _save_qr_state(result.token.hex(), result.expires)
+            _save_qr_state(result.expires)
             continue
+
+
+# ===========================================================================
+# Finish 2FA after QR
+# ===========================================================================
+async def finish_qr_2fa(runtime, password: str) -> tuple:
+    """Called by bot_handlers when the owner sends the 2FA password after QR scan."""
+    client = getattr(runtime, "_qr_client", None)
+    if client is None:
+        return False, "No pending QR login."
+    try:
+        await client.sign_in(password=password)
+    except Exception as e:
+        return False, f"2FA failed: {type(e).__name__}: {e}"
+    runtime.user_client = client
+    runtime._qr_needs_2fa = False
+    _clear_qr_state()
+    try:
+        if CONFIG.get("clock_on"):
+            from .clock import start_clock
+            start_clock(client)
+    except Exception:
+        pass
+    return True, "OK"
+
+
+# ===========================================================================
+# Notify helper
+# ===========================================================================
+async def _notify(runtime, owner_id: int, text: str) -> None:
+    try:
+        if runtime.bot_client:
+            await runtime.bot_client.send_message(owner_id, text)
+    except Exception:
+        pass
