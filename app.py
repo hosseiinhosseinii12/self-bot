@@ -12,16 +12,18 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(BASE_DIR))
 
-from selfbot.config import CONFIG, DB_PATH, release_lock  # noqa: E402
-from selfbot.logging_setup import log, log_bot, log_flask  # noqa: E402
-from selfbot.bootstrap import boot_all, shutdown_all       # noqa: E402
-from selfbot.admin_panel import build_admin_app            # noqa: E402
-from selfbot.user_panel import build_user_app              # noqa: E402
-from selfbot.api import attach_api_routes                  # noqa: E402
-from selfbot.bot_handlers import build_bot_runtime         # noqa: E402
+from selfbot.config import CONFIG, DB_PATH, release_lock           # noqa: E402
+from selfbot.logging_setup import log, log_bot, log_flask           # noqa: E402
+from selfbot.bootstrap import boot_all, shutdown_all                # noqa: E402
+from selfbot.admin_panel import build_admin_app                     # noqa: E402
+from selfbot.user_panel import build_user_app                       # noqa: E402
+from selfbot.api import attach_api_routes                           # noqa: E402
+from selfbot.bot_handlers import build_bot_runtime                  # noqa: E402
 
 
-# --- File lock (fcntl) — safe for Gunicorn multi-worker --------------------
+# ---------------------------------------------------------------------------
+# File lock (fcntl) — safe for Gunicorn multi-worker
+# ---------------------------------------------------------------------------
 _lock_fh = None
 _HAS_LOCK = False
 
@@ -44,6 +46,9 @@ except Exception:
     _HAS_LOCK = False
 
 
+# ---------------------------------------------------------------------------
+# Runtime singleton
+# ---------------------------------------------------------------------------
 _runtime = None
 _runtime_lock = threading.Lock()
 
@@ -56,7 +61,9 @@ def _get_runtime():
         return _runtime
 
 
-# --- Flask app --------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Flask app (admin + user + api)
+# ---------------------------------------------------------------------------
 admin_app = build_admin_app()
 user_app_bp = build_user_app()
 
@@ -65,7 +72,9 @@ attach_api_routes(flask_app)
 flask_app.register_blueprint(user_app_bp)
 
 
-# --- Boot bots in a background thread ---------------------------------------
+# ---------------------------------------------------------------------------
+# Boot async bots in a background thread
+# ---------------------------------------------------------------------------
 def _boot_bots():
     try:
         boot_all(_get_runtime())
@@ -90,11 +99,13 @@ def _ensure_started():
 if _HAS_LOCK:
     _ensure_started()
 else:
-    # Quietly skip — another worker owns the bot.
+    # Another worker owns the bot; this one only serves Flask.
     pass
 
 
-# --- Graceful shutdown ------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Graceful shutdown
+# ---------------------------------------------------------------------------
 import atexit  # noqa: E402
 
 @atexit.register
