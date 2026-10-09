@@ -1,10 +1,7 @@
 """Telegram bot runtime — everyone has full access.
 
-- Same panel for owner and regular users
-- Login + clock work per user (their own session)
-- Target group set via /setgroup <chat_id>
-- Only cost: diamonds (new users start with 500)
-- Per-user panels/state, no tiers
+Per-user panels, per-user sessions, per-user clocks.
+Target group set via /setgroup <chat_id>.
 """
 import asyncio
 import io
@@ -42,20 +39,17 @@ except ImportError:
     TelegramClient = None  # type: ignore
 
 
-# ---------------------------------------------------------------------------
-# Runtime
-# ---------------------------------------------------------------------------
 class BotRuntime:
     def __init__(self):
         self.bot_client: Optional[TelegramClient] = None
-        self.user_clients: dict = {}          # user_id -> TelegramClient
+        self.user_clients: dict = {}
         self.pairing_code: str = ""
         self.owner_id: int = int(CONFIG.get("owner_id", 338266658))
         self.started: bool = False
         self.stop_event = asyncio.Event()
         self.watchdog_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._state: dict = {}                # user_id -> dict
+        self._state: dict = {}
 
     def state_for(self, user_id: int) -> dict:
         return self._state.setdefault(int(user_id), {
@@ -83,9 +77,6 @@ def build_bot_runtime() -> BotRuntime:
     return rt
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 def _guarded(runtime: BotRuntime):
     def deco(fn):
         async def wrapper(event, *a, **kw):
@@ -129,15 +120,12 @@ def _public_base_url() -> str:
     return "http://localhost:8080"
 
 
-# ---------------------------------------------------------------------------
-# Handler registration
-# ---------------------------------------------------------------------------
 def _register_handlers(rt: BotRuntime) -> None:
     bot = rt.bot_client
     if bot is None:
         return
 
-    # --- /start -----------------------------------------------------------
+    # ---- /start ----
     @bot.on(events.NewMessage(pattern=r"^/start$", incoming=True))
     @_guarded(rt)
     async def _start(event):
@@ -148,13 +136,13 @@ def _register_handlers(rt: BotRuntime) -> None:
             pass
         await event.respond(P.main_panel_text(uid), buttons=P.main_panel_buttons())
 
-    # --- /help ------------------------------------------------------------
+    # ---- /help ----
     @bot.on(events.NewMessage(pattern=r"^/help$", incoming=True))
     @_guarded(rt)
     async def _help(event):
         await event.respond(P.help_text(), buttons=P.help_buttons())
 
-    # --- /login -----------------------------------------------------------
+    # ---- /login ----
     @bot.on(events.NewMessage(pattern=r"^/login$", incoming=True))
     @_guarded(rt)
     async def _login(event):
@@ -184,7 +172,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         rt.save_state()
         await event.respond("📱 Send your phone number with country code (e.g. +989121234567).")
 
-    # --- /logout ----------------------------------------------------------
+    # ---- /logout ----
     @bot.on(events.NewMessage(pattern=r"^/logout$", incoming=True))
     @_guarded(rt)
     async def _logout(event):
@@ -207,7 +195,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         rt.save_state()
         await event.respond("Logged out and session deleted.")
 
-    # --- /setgroup --------------------------------------------------------
+    # ---- /setgroup ----
     @bot.on(events.NewMessage(pattern=r"^/setgroup(?:\s+(-?\d+))?$", incoming=True))
     @_guarded(rt)
     async def _setgroup(event):
@@ -229,14 +217,14 @@ def _register_handlers(rt: BotRuntime) -> None:
             parse_mode="md",
         )
 
-    # --- /account ---------------------------------------------------------
+    # ---- /account ----
     @bot.on(events.NewMessage(pattern=r"^/account$", incoming=True))
     @_guarded(rt)
     async def _account(event):
         uid = event.sender_id
         await event.respond(P.account_text(uid), buttons=P.account_buttons())
 
-    # --- /refer -----------------------------------------------------------
+    # ---- /refer ----
     @bot.on(events.NewMessage(pattern=r"^/refer(?:\s+(\S+))?$", incoming=True))
     @_guarded(rt)
     async def _refer(event):
@@ -252,7 +240,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         else:
             await event.respond("Invalid or already-used referral code.")
 
-    # --- .rep / .stop -----------------------------------------------------
+    # ---- .rep ----
     @bot.on(events.NewMessage(pattern=r"^\.rep\s+(\d+)\s+(\d+)\s+(.+)$", incoming=True))
     @_guarded(rt)
     async def _rep(event):
@@ -275,19 +263,16 @@ def _register_handlers(rt: BotRuntime) -> None:
         if not ok:
             if res == "insufficient":
                 bal = E.get_balance(uid)
-                await event.respond(
-                    f"❌ Insufficient diamonds. Need {E.cost_job()}, you have {bal}."
-                )
+                await event.respond(f"❌ Insufficient diamonds. Need {E.cost_job()}, you have {bal}.")
             else:
                 await event.respond(res)
             return
         job = res
         task = asyncio.create_task(J.run_job(rt.bot_client, job))
         J.register_task(job["id"], task)
-        await event.respond(
-            f"✅ Job `{job['id']}` started — every {interval}s for {duration} min."
-        )
+        await event.respond(f"✅ Job `{job['id']}` started — every {interval}s for {duration} min.")
 
+    # ---- .stop ----
     @bot.on(events.NewMessage(pattern=r"^\.stop$", incoming=True))
     @_guarded(rt)
     async def _stop(event):
@@ -297,7 +282,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         n = J.stop_all(owner_id=uid)
         await event.respond(f"Stopped {n} job(s).")
 
-    # --- callbacks --------------------------------------------------------
+    # ---- callbacks ----
     @bot.on(events.CallbackQuery())
     @_guarded(rt)
     async def _cb(event):
@@ -310,7 +295,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         except Exception as e:
             log_bot.warning(f"callback error data={data}: {e}")
 
-    # --- text router ------------------------------------------------------
+    # ---- text router ----
     @bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     @_guarded(rt)
     async def _text(event):
@@ -325,7 +310,6 @@ def _register_handlers(rt: BotRuntime) -> None:
         step = st.get("step") or "idle"
         awaiting = st.get("awaiting") or {}
 
-        # --- QR 2FA password ---
         if awaiting.get("qr_2fa_password"):
             awaiting.pop("qr_2fa_password", None)
             rt.save_state()
@@ -334,12 +318,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 ok, msg = await finish_qr_2fa(rt, uid, text)
                 if ok:
                     await event.respond("✅ Logged in. Clock started.")
-                    try:
-                        client = rt.user_clients.get(uid)
-                        if client and U.get_setting(uid, "clock_on", False):
-                            CLK.start_clock(client, uid)
-                    except Exception:
-                        pass
                 else:
                     await event.respond(f"❌ {msg}")
             except Exception as e:
@@ -347,7 +325,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
-        # --- JOB DRAFT: custom interval ---
         if awaiting.get("job_interval_custom"):
             awaiting.pop("job_interval_custom", None)
             rt.save_state()
@@ -366,7 +343,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Invalid number.")
             return
 
-        # --- JOB DRAFT: custom duration ---
         if awaiting.get("job_duration_custom"):
             awaiting.pop("job_duration_custom", None)
             rt.save_state()
@@ -385,7 +361,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Invalid number.")
             return
 
-        # --- JOB DRAFT: message text ---
         if awaiting.get("job_text"):
             awaiting.pop("job_text", None)
             rt.save_state()
@@ -397,7 +372,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                                 parse_mode="md")
             return
 
-        # --- JOB DRAFT: .txt file ---
         if awaiting.get("job_text_file") and event.document:
             awaiting.pop("job_text_file", None)
             rt.save_state()
@@ -414,7 +388,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ Could not read file: {e}")
             return
 
-        # --- LOGIN: phone ---
         if step == "phone":
             phone = re.sub(r"[^\d+]", "", text)
             if not phone:
@@ -474,7 +447,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ Error: `{type(e).__name__}`")
             return
 
-        # --- LOGIN: code ---
         if step == "code":
             code = re.sub(r"\D", "", text)
             await _tidy(event)
@@ -483,9 +455,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Session expired. Use /login again.")
                 return
             try:
-                await client.sign_in(
-                    st["phone"], code, phone_code_hash=st["hash"]
-                )
+                await client.sign_in(st["phone"], code, phone_code_hash=st["hash"])
             except SessionPasswordNeededError:
                 st["step"] = "2fa"
                 rt.save_state()
@@ -512,7 +482,6 @@ def _register_handlers(rt: BotRuntime) -> None:
             await _finish_login(rt, uid, event, st)
             return
 
-        # --- LOGIN: 2FA ---
         if step == "2fa":
             await _tidy(event)
             client = rt.user_clients.get(uid)
@@ -534,7 +503,6 @@ def _register_handlers(rt: BotRuntime) -> None:
             await _finish_login(rt, uid, event, st)
             return
 
-        # --- AWAITING: interval ---
         if awaiting.get("interval"):
             awaiting.pop("interval", None)
             rt.save_state()
@@ -549,7 +517,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Invalid number.")
             return
 
-        # --- AWAITING: timezone ---
         if awaiting.get("timezone"):
             awaiting.pop("timezone", None)
             rt.save_state()
@@ -562,7 +529,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Invalid timezone.")
             return
 
-        # --- AWAITING: base name ---
         if awaiting.get("base_name"):
             awaiting.pop("base_name", None)
             rt.save_state()
@@ -570,7 +536,6 @@ def _register_handlers(rt: BotRuntime) -> None:
             await event.respond("Base name updated.")
             return
 
-        # --- AWAITING: custom name font ---
         if awaiting.get("custom_name_font"):
             awaiting.pop("custom_name_font", None)
             rt.save_state()
@@ -581,7 +546,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Custom name font saved.")
             return
 
-        # --- AWAITING: custom clock font ---
         if awaiting.get("custom_clock_font"):
             awaiting.pop("custom_clock_font", None)
             rt.save_state()
@@ -592,7 +556,6 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("Custom clock font saved.")
             return
 
-        # --- AWAITING: user request diamonds (from web panel / bot) ---
         user_key = f"user_reqdiamonds:{uid}"
         if awaiting.get(user_key):
             awaiting.pop(user_key, None)
@@ -631,9 +594,6 @@ async def _finish_login(rt: BotRuntime, uid: int, event, st: dict) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Callback router
-# ---------------------------------------------------------------------------
 async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     bot = rt.bot_client
     uid = event.sender_id
@@ -651,7 +611,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             except Exception:
                 pass
 
-    # -------- Navigation --------
     if data == "nav:main":
         await edit(P.main_panel_text(uid), P.main_panel_buttons()); return
     if data == "nav:status":
@@ -667,7 +626,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "nav:help":
         await edit(P.help_text(), P.help_buttons()); return
 
-    # -------- Web panel --------
     if data == "nav:webpanel":
         try:
             from .user_panel import issue_web_token
@@ -689,7 +647,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                        [[Button.inline("◀️ Back", b"nav:main")]])
         return
 
-    # -------- Clock --------
     if data == "clock:on":
         client = rt.user_clients.get(uid)
         if not client:
@@ -714,7 +671,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             CLK.stop_clock(uid)
         await edit(P.main_panel_text(uid), P.main_panel_buttons()); return
 
-    # -------- Settings --------
     if data == "set:interval":
         st["awaiting"]["interval"] = True
         rt.save_state()
@@ -735,7 +691,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         save_config(CONFIG)
         await edit(P.language_text(), P.language_buttons()); return
 
-    # -------- Appearance --------
     if data == "app:base":
         st["awaiting"]["base_name"] = True
         rt.save_state()
@@ -775,7 +730,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline("◀️ Back", b"nav:appearance")]])
         return
 
-    # -------- Jobs --------
     if data == "job:new":
         st["job_draft"] = {}
         st["awaiting"] = {}
@@ -903,7 +857,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline("◀️ Back", b"nav:jobs")]])
         return
 
-    # -------- Account --------
     if data == "acc:reqdiamonds":
         st["awaiting"][f"user_reqdiamonds:{uid}"] = True
         rt.save_state()
@@ -940,9 +893,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await _handle_qr_login(rt, uid, event); return
 
 
-# ---------------------------------------------------------------------------
-# QR login handler
-# ---------------------------------------------------------------------------
 async def _handle_qr_login(rt: BotRuntime, uid: int, event) -> None:
     bot = rt.bot_client
 
@@ -996,9 +946,6 @@ async def _handle_qr_login(rt: BotRuntime, uid: int, event) -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Watchdog
-# ---------------------------------------------------------------------------
 async def _watchdog(rt: BotRuntime) -> None:
     while not rt.stop_event.is_set():
         try:

@@ -3,11 +3,9 @@
 Everyone gets the full control panel now.
 No tiers, no plans — the economy is pure diamonds.
 """
-import random
 from typing import List, Optional
 
 from .config import CONFIG
-from .i18n import t
 from .users import get_user, get_user_settings
 
 try:
@@ -17,7 +15,7 @@ except ImportError:
 
 
 # ===========================================================================
-# Main panel (for everyone — owner + regular users)
+# Main panel
 # ===========================================================================
 def main_panel_buttons() -> List[List]:
     return [
@@ -282,7 +280,7 @@ def job_confirm_text(job: dict) -> str:
 
 
 # ===========================================================================
-# Group selection (help-based, no Reply Keyboard)
+# Group selection help
 # ===========================================================================
 def group_selection_buttons() -> List[List]:
     return [
@@ -294,10 +292,10 @@ def group_selection_buttons() -> List[List]:
 def group_selection_text() -> str:
     return (
         "**🎯 Select Target Group**\n\n"
-        "Send `/setgroup <chat_id>` to set the target group manually.\n\n"
-        "**How to get a chat ID:**\n"
+        "Send `/setgroup <chat_id>` to set the target group.\n\n"
+        "**How to get the group ID:**\n"
         "Forward a message from that group to @userinfobot — "
-        "it will show the group's ID (e.g. `-1001234567890`)."
+        "it will show the group ID (e.g. `-1001234567890`)."
     )
 
 
@@ -438,7 +436,7 @@ def notify_text() -> str:
 
 
 # ===========================================================================
-# User panel aliases (for backward compat — all users get the full panel now)
+# Backward-compat aliases
 # ===========================================================================
 def user_panel_buttons(user_id: int) -> List[List]:
     return main_panel_buttons()

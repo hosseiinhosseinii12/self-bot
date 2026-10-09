@@ -1,12 +1,4 @@
-"""Boot and shutdown orchestration for the whole app.
-
-Xray runs as a separate process (started by Dockerfile CMD) and exposes a
-local SOCKS5 proxy on 127.0.0.1:1080 which tunnels through the VLESS config
-to Cloudflare Workers. Telethon connects through that SOCKS5 proxy directly.
-
-Multiple per-user sessions are loaded on boot so each user has their own
-Telegram client (their own profile clock).
-"""
+"""Boot and shutdown orchestration."""
 import asyncio
 import threading
 from pathlib import Path
@@ -16,7 +8,6 @@ from .config import CONFIG, DB_PATH, android_fallback, get_api_credentials, save
 from .logging_setup import log, log_bot, log_clock
 from .store import users_store
 from .users import ensure_user
-from .subscriptions import set_sub
 
 try:
     from telethon import TelegramClient
@@ -25,11 +16,7 @@ except ImportError:
     TelegramClient = None  # type: ignore
 
 
-# ---------------------------------------------------------------------------
-# Proxy helper
-# ---------------------------------------------------------------------------
 def _build_telethon_proxy():
-    """Return (scheme_id, host, port) tuple for Telethon, or None."""
     if not CONFIG.get("use_proxy"):
         return None
     proxy_url = CONFIG.get("proxy_url") or ""
@@ -60,9 +47,6 @@ def _build_telethon_proxy():
     return None
 
 
-# ---------------------------------------------------------------------------
-# Seeding owner
-# ---------------------------------------------------------------------------
 def _seed_owner() -> None:
     owner = int(CONFIG.get("owner_id", 338266658))
     u = ensure_user(owner, first_name="Owner")
@@ -71,20 +55,15 @@ def _seed_owner() -> None:
         set_balance(owner, 999999)
 
 
-# ---------------------------------------------------------------------------
-# Force-register bot commands (robust imports for Telethon 1.45+)
-# ---------------------------------------------------------------------------
 async def _set_bot_commands(bot) -> None:
-    """Register ONLY the four basic commands in the Telegram menu."""
     try:
         from telethon.tl.functions.bots import SetBotCommandsRequest
     except ImportError as e:
         log_bot.warning(f"SetBotCommandsRequest not available: {e}")
         return
 
-    # --- BotCommand ---
     try:
-        from telethon.tl.types import BotCommand  # type: ignore
+        from telethon.tl.types import BotCommand
     except ImportError:
         try:
             from telethon.tl.types.bots import BotCommand  # type: ignore
@@ -92,23 +71,12 @@ async def _set_bot_commands(bot) -> None:
             log_bot.warning(f"BotCommand not available: {e}")
             return
 
-    # --- BotCommandScopeDefault ---
     BotCommandScopeDefault = None
     try:
         from telethon.tl.types import BotCommandScopeDefault  # type: ignore
     except ImportError:
         try:
             from telethon.tl.types.bots import BotCommandScopeDefault  # type: ignore
-        except ImportError:
-            pass
-
-    # --- BotCommandScopeAllPrivateChats ---
-    BotCommandScopeAllPrivateChats = None
-    try:
-        from telethon.tl.types import BotCommandScopeAllPrivateChats  # type: ignore
-    except ImportError:
-        try:
-            from telethon.tl.types.bots import BotCommandScopeAllPrivateChats  # type: ignore
         except ImportError:
             pass
 
@@ -125,32 +93,22 @@ async def _set_bot_commands(bot) -> None:
             scopes.append(BotCommandScopeDefault())
         except Exception:
             pass
-    if BotCommandScopeAllPrivateChats:
-        try:
-            scopes.append(BotCommandScopeAllPrivateChats())
-        except Exception:
-            pass
 
     if not scopes:
-        log_bot.warning("no valid BotCommandScope found — skipping command registration")
+        log_bot.warning("no BotCommandScope — skipping command registration")
         return
 
     for scope in scopes:
         try:
             await bot(SetBotCommandsRequest(
-                scope=scope,
-                lang_code="",
-                commands=commands,
+                scope=scope, lang_code="", commands=commands,
             ))
         except Exception as e:
-            log_bot.warning(f"could not set commands for {type(scope).__name__}: {e}")
+            log_bot.warning(f"could not set commands: {e}")
 
     log_bot.info(f"registered {len(commands)} commands: start, help, login, logout")
 
 
-# ---------------------------------------------------------------------------
-# Telegram clients
-# ---------------------------------------------------------------------------
 async def _make_bot_client(runtime):
     api_id, api_hash = get_api_credentials()
     bot_token = CONFIG.get("bot_token") or ""
@@ -167,7 +125,7 @@ async def _make_bot_client(runtime):
         await client.start(bot_token=bot_token)
         return client
     except ApiIdPublishedFloodError:
-        log_bot.warning("API_ID_PUBLISHED_FLOOD — retrying with Android public creds")
+        log_bot.warning("API_ID_PUBLISHED_FLOOD — retrying with Android creds")
         aid, ahash = android_fallback()
         client = TelegramClient(session_path, aid, ahash, proxy=proxy_tuple)
         await client.start(bot_token=bot_token)
@@ -175,11 +133,6 @@ async def _make_bot_client(runtime):
 
 
 async def make_user_client_for_login(user_id: int = None):
-    """Build a proxy-aware user client for login / QR login.
-
-    If user_id is given, uses a per-user session file: data/user_<id>.session
-    Otherwise falls back to data/user.session (legacy).
-    """
     api_id, api_hash = get_api_credentials()
     if user_id is not None:
         session_path = str(DB_PATH / f"user_{int(user_id)}.session")
@@ -189,10 +142,7 @@ async def make_user_client_for_login(user_id: int = None):
     log_bot.info(f"make_user_client_for_login: user={user_id} proxy={proxy_tuple}")
 
     client = TelegramClient(
-        session_path,
-        api_id,
-        api_hash,
-        proxy=proxy_tuple,
+        session_path, api_id, api_hash, proxy=proxy_tuple,
         device_model="Pixel 5",
         system_version="11",
         app_version="8.4.1",
@@ -200,12 +150,11 @@ async def make_user_client_for_login(user_id: int = None):
         system_lang_code="en-US",
     )
     await client.connect()
-    log_bot.info("make_user_client_for_login: connected (mobile device profile)")
+    log_bot.info("make_user_client_for_login: connected")
     return client
 
 
 async def _load_user_sessions(runtime) -> None:
-    """Load all existing per-user sessions on boot."""
     for uid_str in list((users_store.all() or {}).keys()):
         if not str(uid_str).isdigit():
             continue
@@ -224,19 +173,16 @@ async def _load_user_sessions(runtime) -> None:
                         from .clock import start_clock
                         start_clock(client, uid)
                     except Exception as e:
-                        log_clock.warning(f"clock autostart failed for uid={uid}: {e}")
+                        log_clock.warning(f"clock autostart failed uid={uid}: {e}")
             else:
                 try:
                     await client.disconnect()
                 except Exception:
                     pass
         except Exception as e:
-            log_bot.warning(f"session load failed for uid={uid}: {e}")
+            log_bot.warning(f"session load failed uid={uid}: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Boot
-# ---------------------------------------------------------------------------
 _async_loop = None
 
 
@@ -245,7 +191,6 @@ def boot_all(runtime) -> None:
     loop = asyncio.new_event_loop()
     _async_loop = loop
     asyncio.set_event_loop(loop)
-
     try:
         loop.run_until_complete(_boot_async(runtime))
         loop.run_forever()
@@ -256,15 +201,13 @@ def boot_all(runtime) -> None:
 async def _boot_async(runtime) -> None:
     log.info("=== SELF BOT booting ===")
 
-    # 1) Verify Xray's SOCKS5 proxy is reachable
     try:
         proxy_tuple = _build_telethon_proxy()
         if proxy_tuple:
             _, host, port = proxy_tuple
             try:
                 r, w = await asyncio.wait_for(
-                    asyncio.open_connection(host=host, port=port), timeout=5.0
-                )
+                    asyncio.open_connection(host=host, port=port), timeout=5.0)
                 w.close()
                 try:
                     await w.wait_closed()
@@ -272,18 +215,16 @@ async def _boot_async(runtime) -> None:
                     pass
                 log.info(f"Xray SOCKS5 proxy reachable at {host}:{port}")
             except Exception as e:
-                log.warning(f"Xray SOCKS5 proxy NOT reachable at {host}:{port}: {e}")
+                log.warning(f"Xray SOCKS5 proxy NOT reachable: {e}")
         else:
             log.info("proxy disabled — connecting directly")
     except Exception as e:
         log.warning(f"proxy check failed: {e}")
 
-    # 2) Seed owner
     log.info("seeding owner…")
     _seed_owner()
     log.info("owner seeded")
 
-    # 3) Bot client
     log.info("connecting bot client…")
     try:
         runtime.bot_client = await _make_bot_client(runtime)
@@ -292,32 +233,25 @@ async def _boot_async(runtime) -> None:
         log_bot.error(f"bot client failed: {e}")
         return
 
-    # 3a) Force-register bot commands
     try:
         await _set_bot_commands(runtime.bot_client)
     except Exception as e:
         log_bot.warning(f"could not set bot commands: {e}")
 
-    # 3b) Pairing code
     code = getattr(runtime, "pairing_code", "------")
     log.info("╔════════════════════════════════════════════╗")
     log.info(f"║  PAIRING CODE:  {code}                    ║")
-    log.info("║  Send this to your bot to become owner.    ║")
     log.info("╚════════════════════════════════════════════╝")
 
-    # 4) Load existing per-user sessions
     log.info("loading user sessions…")
     await _load_user_sessions(runtime)
 
-    # 5) Register handlers
     log.info("registering bot handlers…")
     from .bot_handlers import _register_handlers, start_watchdog
     _register_handlers(runtime)
     await start_watchdog(runtime)
 
-    # 6) Scheduler
     _start_scheduler(runtime)
-
     log.info("=== SELF BOT ready ===")
 
 
@@ -343,9 +277,6 @@ def _start_scheduler(runtime) -> None:
     log.info("scheduler started (backup @ 3AM)")
 
 
-# ---------------------------------------------------------------------------
-# Shutdown
-# ---------------------------------------------------------------------------
 def shutdown_all(runtime) -> None:
     if runtime is None:
         return
@@ -369,7 +300,6 @@ async def _shutdown_async(runtime) -> None:
         await stop_watchdog(runtime)
     except Exception:
         pass
-    # Strip time from every user's name
     for uid, client in list(getattr(runtime, "user_clients", {}).items()):
         try:
             from .clock import shutdown_clock
