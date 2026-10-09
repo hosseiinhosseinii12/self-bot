@@ -32,6 +32,7 @@ def main_panel_buttons() -> List[List]:
 def main_panel_text() -> str:
     from .clock import last_written
     from .economy import cost_clock, cost_job, get_balance
+    from .subscriptions import effective_plan as _eff
 
     owner = int(CONFIG.get("owner_id", 338266658))
     state = "🟢 ON" if CONFIG.get("clock_on") else "🔴 OFF"
@@ -39,7 +40,7 @@ def main_panel_text() -> str:
     interval = CONFIG.get("interval", 5)
     tz = CONFIG.get("timezone", "UTC")
     last = last_written() or "—"
-    plan = effective_plan(owner)
+    plan = _eff(owner)
     bal = get_balance(owner)
 
     if plan in ("free", "basic"):
@@ -149,7 +150,7 @@ def jobs_buttons() -> List[List]:
 
 
 def jobs_text() -> str:
-    from .jobs import active_jobs, active_count
+    from .jobs import active_jobs
     from .subscriptions import plan_limits
     from .economy import cost_job
 
@@ -243,7 +244,7 @@ def help_text() -> str:
         "**Help**\n\n"
         "Commands:\n"
         "/start — main panel\n"
-        "/login — log in to a Telegram account (phone → code)\n"
+        "/login — log in with phone → code\n"
         "/logout — delete session\n"
         "/account — diamonds + subscription + QR Login\n"
         "/request — request diamonds or subscription\n"
