@@ -1,12 +1,5 @@
-"""QR Code Login flow for Telegram.
-
-Uses Telethon's native client.qr_login(). Avoids importing raw
-AuthLoginToken classes (their import path changed across Telethon versions).
-
-QR is rendered with a gradient background + rounded card + caption.
-"""
+"""QR Code Login flow for Telegram — per-user sessions."""
 import asyncio
-import base64
 import io
 import time
 from typing import Optional
@@ -16,9 +9,6 @@ from .logging_setup import log_bot
 from .store import user_state_store
 
 
-# ===========================================================================
-# Diagnostics
-# ===========================================================================
 TELETHON_ERROR: Optional[str] = None
 TELETHON_VERSION: Optional[str] = None
 QRCODE_ERROR: Optional[str] = None
@@ -54,15 +44,9 @@ def diagnose() -> dict:
     }
 
 
-# ===========================================================================
-# Styled QR rendering
-# ===========================================================================
 def _render_qr_png(url: str) -> bytes:
-    """Render a styled QR code with a gradient background."""
     if not HAS_QRCODE:
         return b""
-
-    # Try Pillow-based styled rendering
     try:
         from PIL import Image, ImageDraw, ImageFont
 
@@ -74,46 +58,34 @@ def _render_qr_png(url: str) -> bytes:
         )
         qr.add_data(url)
         qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="#0f0f1a", back_color="white").convert("RGB")
+        qr_img = qr.make_image(fill_color="#0a0a0a", back_color="white").convert("RGB")
 
         qr_w, qr_h = qr_img.size
         pad = 60
         canvas_w = qr_w + pad * 2
         canvas_h = qr_h + pad * 2 + 90
 
-        canvas = Image.new("RGB", (canvas_w, canvas_h), "#0b0f1a")
+        canvas = Image.new("RGB", (canvas_w, canvas_h), "#fafafa")
         draw = ImageDraw.Draw(canvas)
 
-        # Gradient background (dark blue → purple)
-        for y in range(canvas_h):
-            t = y / max(1, canvas_h)
-            r = int(11 + (40 - 11) * t)
-            g = int(15 + (20 - 15) * t)
-            b = int(26 + (70 - 26) * t)
-            draw.line([(0, y), (canvas_w, y)], fill=(r, g, b))
-
-        # Decorative accent bars (top-left)
-        accent_colors = ["#4f7dff", "#8b5cf6", "#22c55e"]
+        accent_colors = ["#0a0a0a", "#525252", "#a3a3a3"]
         for i, col in enumerate(accent_colors):
             y = 22 + i * 7
             draw.rectangle([24, y, 24 + 70, y + 4], fill=col)
 
-        # Rounded white card behind QR
         card_pad = 14
         card_box = [
-            pad - card_pad,
-            pad - card_pad,
-            pad + qr_w + card_pad,
-            pad + qr_h + card_pad,
+            pad - card_pad, pad - card_pad,
+            pad + qr_w + card_pad, pad + qr_h + card_pad,
         ]
         try:
-            draw.rounded_rectangle(card_box, radius=18, fill="white")
+            draw.rounded_rectangle(card_box, radius=18, fill="white",
+                                    outline="#e5e5e5", width=1)
         except AttributeError:
-            draw.rectangle(card_box, fill="white")
+            draw.rectangle(card_box, fill="white", outline="#e5e5e5")
 
         canvas.paste(qr_img, (pad, pad))
 
-        # Caption below QR
         try:
             font = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
         except Exception:
@@ -125,12 +97,8 @@ def _render_qr_png(url: str) -> bytes:
             tw = bbox[2] - bbox[0]
         except Exception:
             tw = len(caption) * 8
-        draw.text(
-            ((canvas_w - tw) // 2, pad + qr_h + 40),
-            caption,
-            fill="#a5b4d4",
-            font=font,
-        )
+        draw.text(((canvas_w - tw) // 2, pad + qr_h + 40),
+                  caption, fill="#525252", font=font)
 
         buf = io.BytesIO()
         canvas.save(buf, format="PNG")
@@ -138,7 +106,6 @@ def _render_qr_png(url: str) -> bytes:
 
     except Exception as e:
         log_bot.warning(f"styled qr failed, falling back: {e}")
-        # Fallback: plain QR
         try:
             qr = qrcode.QRCode(box_size=10, border=2)
             qr.add_data(url)
@@ -152,39 +119,37 @@ def _render_qr_png(url: str) -> bytes:
             return b""
 
 
-# ===========================================================================
-# State
-# ===========================================================================
-def _save_qr_state(expires_at: float) -> None:
+def _save_qr_state(uid: int, expires_at: float) -> None:
     try:
-        user_state_store.set("qr_login", {"expires_at": expires_at})
+        user_state_store.set(f"qr_login:{uid}", {"expires_at": expires_at})
     except Exception:
         pass
 
 
-def _clear_qr_state() -> None:
+def _clear_qr_state(uid: int) -> None:
     try:
-        user_state_store.delete("qr_login")
+        user_state_store.delete(f"qr_login:{uid}")
     except Exception:
         pass
 
 
-# ===========================================================================
-# Public API
-# ===========================================================================
-async def start_qr_login(runtime) -> tuple:
-    """Start QR login. Returns (ok, msg_or_url, png, expires_at)."""
+async def start_qr_login(runtime, user_id: int = None) -> tuple:
+    """Start QR login for a user. Returns (ok, msg_or_url, png, expires_at)."""
     if not HAS_TELETHON:
         return False, f"Telethon import failed: {TELETHON_ERROR or 'unknown'}", b"", 0
     if not HAS_QRCODE:
         return False, f"qrcode import failed: {QRCODE_ERROR or 'not installed'}", b"", 0
 
-    client = getattr(runtime, "user_client", None)
+    uid = int(user_id) if user_id else None
+
+    client = runtime.user_clients.get(uid) if uid else None
     fresh = False
     if client is None:
         try:
             from .bootstrap import make_user_client_for_login
-            client = await make_user_client_for_login()
+            client = await make_user_client_for_login(uid)
+            if uid:
+                runtime.user_clients[uid] = client
             fresh = True
         except Exception as e:
             log_bot.error(f"qr: failed to create user client: {e}")
@@ -218,7 +183,7 @@ async def start_qr_login(runtime) -> tuple:
                 pass
         return False, "QR object has no url.", b"", 0
 
-    log_bot.info(f"qr: got url (len={len(qr_url)})")
+    log_bot.info(f"qr: got url for uid={uid} (len={len(qr_url)})")
     expires_at = time.time() + 60.0
 
     png = _render_qr_png(qr_url)
@@ -232,90 +197,86 @@ async def start_qr_login(runtime) -> tuple:
 
     runtime._qr_client = client
     runtime._qr_expires_at = expires_at
-    _save_qr_state(expires_at)
+    if uid:
+        _save_qr_state(uid, expires_at)
 
-    asyncio.create_task(_wait_native(runtime, qr_obj))
+    asyncio.create_task(_wait_native(runtime, qr_obj, uid))
 
-    log_bot.info(f"qr: started (expires_at={expires_at})")
+    log_bot.info(f"qr: started for uid={uid} (expires_at={expires_at})")
     return True, qr_url, png, expires_at
 
 
-# ===========================================================================
-# Waiter
-# ===========================================================================
-async def _wait_native(runtime, qr_obj) -> None:
-    owner_id = int(CONFIG.get("owner_id", 338266658))
+async def _wait_native(runtime, qr_obj, user_id: int = None) -> None:
+    uid = int(user_id) if user_id else int(CONFIG.get("owner_id", 338266658))
     client = runtime._qr_client
 
     try:
         await asyncio.wait_for(qr_obj.wait(), timeout=90.0)
     except asyncio.TimeoutError:
-        await _notify(runtime, owner_id, "⏱ QR code expired. Send /login to try again.")
-        _clear_qr_state()
+        await _notify(runtime, uid, "⏱ QR code expired. Try again.")
+        _clear_qr_state(uid)
         return
     except SessionPasswordNeededError:
-        await _notify(runtime, owner_id,
+        await _notify(runtime, uid,
                       "✅ QR scanned. 🔐 2FA required.\nSend your 2FA password now.")
         runtime._qr_needs_2fa = True
-        rt_state = getattr(runtime, "_state", {})
-        rt_state.setdefault("awaiting", {})["qr_2fa_password"] = True
-        try:
-            runtime.save_state()
-        except Exception:
-            pass
+        st = runtime.state_for(uid)
+        st.setdefault("awaiting", {})["qr_2fa_password"] = True
+        runtime.save_state()
         return
     except Exception as e:
         log_bot.error(f"qr wait_native failed: {type(e).__name__}: {e}")
-        await _notify(runtime, owner_id, f"❌ QR login failed: {e}")
-        _clear_qr_state()
+        await _notify(runtime, uid, f"❌ QR login failed: {e}")
+        _clear_qr_state(uid)
         return
 
-    runtime.user_client = client
-    _clear_qr_state()
-    log_bot.info("qr: login succeeded (no 2FA)")
+    if user_id:
+        runtime.user_clients[int(user_id)] = client
+    _clear_qr_state(uid)
+    log_bot.info(f"qr: login succeeded for uid={uid}")
 
     try:
         authorized = await client.is_user_authorized()
-        log_bot.info(f"qr: is_user_authorized={authorized}")
+        log_bot.info(f"qr: is_user_authorized={authorized} for uid={uid}")
     except Exception:
         pass
 
-    await _notify(runtime, owner_id,
-                  "✅ Logged in via QR code.\nYou can now use /on, /name, etc.")
+    await _notify(runtime, uid, "✅ Logged in via QR code.")
     try:
-        if CONFIG.get("clock_on"):
+        from .users import get_user_settings
+        s = get_user_settings(uid)
+        if s.get("clock_on"):
             from .clock import start_clock
-            start_clock(client)
+            start_clock(client, uid)
     except Exception:
         pass
 
 
-# ===========================================================================
-# Finish 2FA
-# ===========================================================================
-async def finish_qr_2fa(runtime, password: str) -> tuple:
-    client = getattr(runtime, "_qr_client", None)
+async def finish_qr_2fa(runtime, user_id: int, password: str) -> tuple:
+    uid = int(user_id)
+    client = runtime.user_clients.get(uid)
+    if client is None:
+        client = getattr(runtime, "_qr_client", None)
     if client is None:
         return False, "No pending QR login."
     try:
         await client.sign_in(password=password)
     except Exception as e:
         return False, f"2FA failed: {type(e).__name__}: {e}"
-    runtime.user_client = client
+    runtime.user_clients[uid] = client
     runtime._qr_needs_2fa = False
-    _clear_qr_state()
+    _clear_qr_state(uid)
     try:
-        if CONFIG.get("clock_on"):
+        from .users import get_user_settings
+        s = get_user_settings(uid)
+        if s.get("clock_on"):
             from .clock import start_clock
-            start_clock(client)
+            start_clock(client, uid)
     except Exception:
         pass
     return True, "OK"
 
 
-# ===========================================================================
-# Notify
-# ===========================================================================
 async def _notify(runtime, owner_id: int, text: str) -> None:
     try:
         if runtime.bot_client:
