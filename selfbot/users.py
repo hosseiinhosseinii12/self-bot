@@ -1,4 +1,5 @@
-"""User records: creation, ban, delete, referral codes, notifications."""
+"""User records: creation, ban, delete, referral codes, notifications,
+and per-user settings (clock, fonts, jobs, etc.)."""
 import random
 import string
 from datetime import datetime, timezone as dt_timezone
@@ -23,16 +24,21 @@ def _gen_referral_code() -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 
+# ===========================================================================
+# Core user records
+# ===========================================================================
 def get_user(user_id: int) -> Optional[dict]:
     return users_store.get(str(user_id))
 
 
 def ensure_user(user_id: int, username: str = "", first_name: str = "",
                 referred_by: Optional[int] = None) -> dict:
+    """Create user if missing, refresh soft fields otherwise.
+    New users get 500 diamonds by default (SIGNUP_BONUS env overrides).
+    """
     key = str(user_id)
     existing = users_store.get(key)
     if existing:
-        # refresh soft fields
         existing["username"] = username or existing.get("username", "")
         existing["first_name"] = first_name or existing.get("first_name", "")
         existing["last_seen"] = _now_iso()
@@ -44,7 +50,7 @@ def ensure_user(user_id: int, username: str = "", first_name: str = "",
         "username": username or "",
         "first_name": first_name or "",
         "diamonds": 0,
-        "plan": "free",
+        "plan": "member",
         "banned": False,
         "referral_code": _gen_referral_code(),
         "referred_by": int(referred_by) if referred_by else None,
@@ -57,10 +63,20 @@ def ensure_user(user_id: int, username: str = "", first_name: str = "",
         "duration_extension": 0,
         "created_at": _now_iso(),
         "last_seen": _now_iso(),
+        # per-user settings
+        "clock_on": False,
+        "interval": 5,
+        "timezone": "UTC",
+        "base_name": "User",
+        "name_font": "normal",
+        "clock_font": "double",
+        "custom_name_font": "",
+        "custom_clock_font": "",
+        "job_target": None,
     }
     users_store.set(key, record)
-    grant(user_id, signup_bonus(), "signup_bonus")
-    log.info(f"created user={user_id}")
+    grant(user_id, signup_bonus(), "signup_bonus")   # 500 by default
+    log.info(f"created user={user_id} with {signup_bonus()} diamonds")
     return record
 
 
@@ -120,6 +136,9 @@ def new_last_7d() -> int:
     return n
 
 
+# ===========================================================================
+# Notifications
+# ===========================================================================
 def set_notify(user_id: int, key: str, value: bool) -> None:
     u = get_user(user_id) or {"id": int(user_id)}
     notify = u.get("notify") or dict(DEFAULT_NOTIFY)
@@ -134,6 +153,9 @@ def get_notify(user_id: int) -> dict:
     return u.get("notify") or dict(DEFAULT_NOTIFY)
 
 
+# ===========================================================================
+# Referrals
+# ===========================================================================
 def find_by_referral_code(code: str) -> Optional[int]:
     code = code.strip().upper()
     for uid_str, u in all_users().items():
@@ -156,3 +178,39 @@ def touch(user_id: int) -> None:
     if u:
         u["last_seen"] = _now_iso()
         users_store.set(str(user_id), u)
+
+
+# ===========================================================================
+# Per-user settings (used by clock, panels, jobs)
+# ===========================================================================
+def get_setting(user_id: int, key: str, default=None):
+    u = get_user(user_id) or {}
+    return u.get(key, default)
+
+
+def set_setting(user_id: int, key: str, value) -> None:
+    u = get_user(user_id) or {"id": int(user_id)}
+    u[key] = value
+    users_store.set(str(user_id), u)
+
+
+def get_user_settings(user_id: int) -> dict:
+    """Return the full settings block for a user, with safe defaults."""
+    u = get_user(user_id) or {}
+    return {
+        "clock_on": bool(u.get("clock_on", False)),
+        "interval": int(u.get("interval", 5)),
+        "timezone": u.get("timezone", "UTC"),
+        "base_name": u.get("base_name", "User"),
+        "name_font": u.get("name_font", "normal"),
+        "clock_font": u.get("clock_font", "double"),
+        "custom_name_font": u.get("custom_name_font", ""),
+        "custom_clock_font": u.get("custom_clock_font", ""),
+        "job_target": u.get("job_target"),
+    }
+
+
+def update_user_settings(user_id: int, **fields) -> None:
+    u = get_user(user_id) or {"id": int(user_id)}
+    u.update(fields)
+    users_store.set(str(user_id), u)
