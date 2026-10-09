@@ -1,4 +1,9 @@
-"""Telegram bot runtime — login-first with QR, per-user, group-first jobs."""
+"""Telegram bot runtime — login-first with QR, per-user, group-first jobs.
+
+- Peer group selection via Telegram native UI (KeyboardButtonRequestPeer)
+- Fallback to manual chat_id entry if peer picker unavailable
+- Per-user state, per-user sessions
+"""
 import asyncio
 import io
 import os
@@ -146,6 +151,15 @@ def _register_handlers(rt: BotRuntime) -> None:
         st["awaiting"] = {}
         st["awaiting_peer"] = False
         rt.save_state()
+        # Close any reply keyboard from previous peer picker
+        try:
+            await event.respond(" ", buttons=Button.clear())
+            try:
+                await event.delete()
+            except Exception:
+                pass
+        except Exception:
+            pass
         if not rt.is_logged_in(uid):
             await event.respond(P.login_required_text(),
                                 buttons=P.login_required_buttons())
@@ -243,12 +257,23 @@ def _register_handlers(rt: BotRuntime) -> None:
             if chat_id is None:
                 return
 
-            from_id = getattr(msg, "from_id", None)
+            # Extract the user who pressed the button
             uid = None
-            if from_id is not None and hasattr(from_id, "user_id"):
-                uid = from_id.user_id
+            user_id_attr = getattr(msg, "user_id", None)
+            if user_id_attr:
+                uid = int(user_id_attr)
+            if uid is None:
+                from_id = getattr(msg, "from_id", None)
+                if from_id is not None and hasattr(from_id, "user_id"):
+                    uid = int(from_id.user_id)
+            if uid is None:
+                peer_id = getattr(msg, "peer_id", None)
+                if peer_id is not None and hasattr(peer_id, "user_id"):
+                    uid = int(peer_id.user_id)
             if uid is None:
                 uid = rt.owner_id
+
+            log_bot.info(f"peer selected by uid={uid}: chat_id={chat_id}")
 
             rt.set_recent_group(uid, int(chat_id))
             st = rt.state_for(uid)
@@ -257,20 +282,21 @@ def _register_handlers(rt: BotRuntime) -> None:
             draft["target"] = int(chat_id)
             rt.save_state()
 
+            # Close the reply keyboard
             try:
-                await bot.send_message(uid, "Keyboard closed.", buttons=Button.clear())
+                await bot.send_message(uid, "✅ Got it.", buttons=Button.clear())
             except Exception:
                 pass
 
+            # Continue to interval step
             await bot.send_message(
                 uid,
-                f"✅ Group selected: `{chat_id}`\n\n"
-                f"{P.job_interval_text(int(chat_id))}",
+                P.job_interval_text(int(chat_id)),
                 buttons=P.job_interval_buttons(),
                 parse_mode="md",
             )
         except Exception as e:
-            log_bot.error(f"peer selection handler error: {e}")
+            log_bot.error(f"peer selection handler error: {type(e).__name__}: {e}")
 
     # ---- callbacks ----
     @bot.on(events.CallbackQuery())
@@ -316,7 +342,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
-        # ---- Job draft: manual chat_id (fallback for old Telegram clients) ----
+        # ---- Job draft: manual chat_id (fallback) ----
         if awaiting.get("job_chat_id_manual"):
             awaiting.pop("job_chat_id_manual", None)
             rt.save_state()
