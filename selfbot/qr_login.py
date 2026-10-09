@@ -3,35 +3,51 @@
 Uses Telethon's native client.qr_login() when available, falls back to
 manual ExportLoginTokenRequest if the native method is missing.
 
-IMPORTANT: every import is guarded so we can report *which* one fails.
+Every import is guarded so we can report *which* one fails.
 """
 import asyncio
 import base64
 import io
 import time
-import traceback
 from typing import Optional
 
 from .config import CONFIG, DB_PATH, get_api_credentials
 from .logging_setup import log_bot
 from .store import user_state_store
 
+
 # ===========================================================================
 # Diagnostics — find out exactly what fails
 # ===========================================================================
 TELETHON_ERROR: Optional[str] = None
+TELETHON_VERSION: Optional[str] = None
 QRCODE_ERROR: Optional[str] = None
+_HAS_QR_TYPES = False
 
 try:
     import telethon  # noqa: F401
+    TELETHON_VERSION = getattr(telethon, "__version__", "unknown")
+
     from telethon import TelegramClient
     from telethon.errors import SessionPasswordNeededError
-    from telethon.tl.functions.auth import (ExportLoginTokenRequest,
-                                             AcceptLoginTokenRequest)
-    from telethon.tl.types import (AuthLoginToken,
-                                    AuthLoginTokenMigrateTo,
-                                    AuthLoginTokenSuccess)
+
+    # Try to import QR-specific types (Telethon >= 1.24)
+    try:
+        from telethon.tl.functions.auth import (ExportLoginTokenRequest,
+                                                  AcceptLoginTokenRequest)
+        from telethon.tl.types import (AuthLoginToken,
+                                        AuthLoginTokenMigrateTo,
+                                        AuthLoginTokenSuccess)
+        _HAS_QR_TYPES = True
+    except ImportError as _e:
+        _HAS_QR_TYPES = False
+        log_bot.warning(
+            f"qr_login: QR types missing (need Telethon>=1.24): {_e} "
+            f"(installed version: {TELETHON_VERSION})"
+        )
+
     HAS_TELETHON = True
+    log_bot.info(f"qr_login: telethon {TELETHON_VERSION} loaded, QR types={_HAS_QR_TYPES}")
 except Exception as _e:
     HAS_TELETHON = False
     TELETHON_ERROR = f"{type(_e).__name__}: {_e}"
@@ -47,10 +63,12 @@ except Exception as _e:
 
 
 def diagnose() -> dict:
-    """Return a dict describing which dependency is missing."""
+    """Return a dict describing which dependency is missing or too old."""
     return {
         "telethon": HAS_TELETHON,
+        "telethon_version": TELETHON_VERSION,
         "telethon_error": TELETHON_ERROR,
+        "qr_types": _HAS_QR_TYPES,
         "qrcode": HAS_QRCODE,
         "qrcode_error": QRCODE_ERROR,
     }
@@ -101,14 +119,18 @@ def _clear_qr_state() -> None:
 # Public API
 # ===========================================================================
 async def start_qr_login(runtime) -> tuple:
-    """Start QR login. Returns (ok: bool, msg_or_url: str, png: bytes, expires_at: float).
+    """Start QR login. Returns (ok, msg_or_url, png, expires_at).
 
-    If ok is True: msg is the tg:// URL, png is the QR image, expires_at is epoch.
-    If ok is False: msg is the error message.
+    - ok=True:  msg is the tg:// URL, png is the QR PNG, expires_at epoch
+    - ok=False: msg is the error message
     """
-    # --- dependency checks with clear messages ---
+    # --- dependency checks ---
     if not HAS_TELETHON:
         return False, f"Telethon import failed: {TELETHON_ERROR or 'unknown'}", b"", 0
+    if not _HAS_QR_TYPES:
+        return (False,
+                f"Telethon too old (need >=1.24 for AuthLoginToken). "
+                f"Installed: {TELETHON_VERSION}", b"", 0)
     if not HAS_QRCODE:
         return False, f"qrcode import failed: {QRCODE_ERROR or 'not installed'}", b"", 0
 
@@ -189,7 +211,6 @@ async def start_qr_login(runtime) -> tuple:
         token_b64 = base64.urlsafe_b64encode(result.token).rstrip(b"=").decode()
         qr_url = f"tg://login?token={token_b64}"
         expires_at = float(result.expires)
-        # Start manual polling for this fallback path
         asyncio.create_task(_poll_manual(runtime, client, api_id, api_hash))
 
     # --- render PNG ---

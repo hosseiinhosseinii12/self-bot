@@ -16,11 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Install deps, then ALWAYS upgrade telethon to the latest version
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --upgrade -r requirements.txt \
+    && pip install --no-cache-dir --upgrade --no-deps telethon \
+    && python -c "import telethon; print('telethon version:', telethon.__version__)" \
+    && python -c "from telethon.tl.types import AuthLoginToken; print('QR types OK')"
+
 COPY . .
 RUN mkdir -p /app/data /app/data/logs /app/data/backups
 
 EXPOSE 8080
 
-# Start Xray in background, then gunicorn
 CMD ["sh", "-c", "xray run -c /app/xray.json & sleep 2 && gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 app:flask_app"]
