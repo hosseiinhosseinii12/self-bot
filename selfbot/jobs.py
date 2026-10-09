@@ -1,4 +1,8 @@
-"""Repeat jobs — DB-backed, per-user, unlimited duration supported."""
+"""Repeat jobs — DB-backed, per-user, unlimited duration supported.
+
+Robust entity resolution: resolves the target chat once at the start,
+populates the dialogs cache so `send_message` works with numeric chat_ids.
+"""
 import asyncio
 import random
 import string
@@ -12,7 +16,7 @@ from .logging_setup import log_jobs
 from . import db
 
 MIN_REPEAT_SEC = 60
-MAX_MESSAGES = 0  # 0 = unlimited
+MAX_MESSAGES = 0        # 0 = unlimited
 MAX_HISTORY = 30
 MAX_TEMPLATES = 20
 
@@ -151,6 +155,62 @@ def stop_all(owner_id: Optional[int] = None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Entity resolution helpers
+# ---------------------------------------------------------------------------
+async def _resolve_target(bot_client, target_id: int):
+    """Try hard to resolve a numeric chat_id to a Telethon entity.
+
+    Order of attempts:
+      1. get_entity(int)
+      2. get_input_entity(int)
+      3. iter_dialogs() to populate cache, then retry
+      4. fall back to the raw int
+    Returns entity or the raw int.
+    """
+    tid = int(target_id)
+
+    # 1) direct
+    try:
+        entity = await bot_client.get_entity(tid)
+        log_jobs.info(f"resolve: get_entity({tid}) OK -> {entity}")
+        return entity
+    except Exception as e:
+        log_jobs.warning(f"resolve: get_entity({tid}) failed: {type(e).__name__}: {e}")
+
+    # 2) input entity
+    try:
+        entity = await bot_client.get_input_entity(tid)
+        log_jobs.info(f"resolve: get_input_entity({tid}) OK -> {entity}")
+        return entity
+    except Exception as e:
+        log_jobs.warning(f"resolve: get_input_entity({tid}) failed: {type(e).__name__}: {e}")
+
+    # 3) populate dialogs cache
+    try:
+        count = 0
+        async for _d in bot_client.iter_dialogs():
+            count += 1
+        log_jobs.info(f"resolve: iter_dialogs populated {count} chats")
+    except Exception as e:
+        log_jobs.warning(f"resolve: iter_dialogs failed: {type(e).__name__}: {e}")
+
+    # retry direct after cache
+    try:
+        entity = await bot_client.get_entity(tid)
+        log_jobs.info(f"resolve: after dialogs cache, get_entity({tid}) OK -> {entity}")
+        return entity
+    except Exception as e:
+        log_jobs.warning(f"resolve: still failed after cache: {type(e).__name__}: {e}")
+
+    # 4) fallback to raw int
+    log_jobs.warning(
+        f"resolve: falling back to raw int {tid}. "
+        f"Add the bot to this chat first, or check that the ID is correct."
+    )
+    return tid
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 async def run_job(bot_client, job: dict) -> None:
@@ -164,6 +224,9 @@ async def run_job(bot_client, job: dict) -> None:
         f"run_job START id={job_id} owner={owner_id} target={target_id} "
         f"interval={interval}s duration={duration}m"
     )
+
+    # --- Resolve target ONCE ---
+    resolved_target = await _resolve_target(bot_client, target_id)
 
     deadline = None
     if duration > 0:
@@ -182,23 +245,44 @@ async def run_job(bot_client, job: dict) -> None:
 
             sent_ok = False
             last_err = None
+
             for attempt in range(3):
                 try:
-                    await bot_client.send_message(int(target_id), rendered)
+                    await bot_client.send_message(resolved_target, rendered)
                     sent_ok = True
                     break
+                except ValueError as e:
+                    last_err = e
+                    log_jobs.warning(
+                        f"job {job_id}: attempt {attempt+1} ValueError: {e}"
+                    )
+                    # Try re-resolve once
+                    try:
+                        resolved_target = await _resolve_target(bot_client, target_id)
+                        await bot_client.send_message(resolved_target, rendered)
+                        sent_ok = True
+                        log_jobs.info(f"job {job_id}: re-resolve + send OK")
+                        break
+                    except Exception as e2:
+                        last_err = e2
+                        log_jobs.warning(
+                            f"job {job_id}: re-resolve failed: "
+                            f"{type(e2).__name__}: {e2}"
+                        )
                 except Exception as e:
                     last_err = e
                     log_jobs.warning(
                         f"job {job_id}: attempt {attempt+1} failed: "
                         f"{type(e).__name__}: {e}"
                     )
-                    await asyncio.sleep(2)
+                await asyncio.sleep(2)
 
             if not sent_ok:
                 log_jobs.error(f"job {job_id}: giving up: {last_err}")
-                db.update_job(job_id, status="send_failed",
-                              error=str(last_err), finished_at=_now_iso())
+                db.update_job(
+                    job_id, status="send_failed",
+                    error=str(last_err), finished_at=_now_iso()
+                )
                 return
 
             sent += 1
