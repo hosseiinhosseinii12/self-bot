@@ -158,12 +158,14 @@ def _register_handlers(rt: BotRuntime) -> None:
             return
         await event.respond(P.main_panel_text(), buttons=P.main_panel_buttons())
 
-    # --- pairing ----------------------------------------------------------
+    # --- pairing (only if owner not yet set) ------------------------------
     @bot.on(events.NewMessage(pattern=r"^\d{6}$"))
     @_guarded(rt)
     async def _pairing(event):
-        if event.sender_id == rt.owner_id:
+        # If an owner is already configured (env or config), skip entirely
+        if rt.owner_id and rt.owner_id != 0:
             return
+
         if event.raw_text.strip() == rt.pairing_code:
             rt.owner_id = int(event.sender_id)
             CONFIG["owner_id"] = rt.owner_id
@@ -195,6 +197,10 @@ def _register_handlers(rt: BotRuntime) -> None:
         if session_file.exists():
             session_file.unlink()
         rt.user_client = None
+        # Clear any pending login state
+        rt._awaiting.clear()
+        rt._pending_targets.clear()
+        rt.save_state()
         await event.respond("Logged out and session deleted.")
 
     # --- /account ---------------------------------------------------------
@@ -384,13 +390,19 @@ def _register_handlers(rt: BotRuntime) -> None:
             return
         state = rt._awaiting
 
+        # --- phone (login step 1) ---
         if state.get("phone"):
             state.pop("phone", None)
             rt.save_state()
             rt._pending_targets["phone"] = event.raw_text.strip()
+            rt._pending_targets.pop("phone_saved", None)
+            rt._pending_targets.pop("phone_code_hash", None)
+            rt._pending_targets.pop("code", None)
             rt.save_state()
             await _do_login(rt, event)
             return
+
+        # --- code (login step 2) ---
         if state.get("code"):
             state.pop("code", None)
             rt.save_state()
@@ -398,6 +410,8 @@ def _register_handlers(rt: BotRuntime) -> None:
             rt.save_state()
             await _do_login(rt, event)
             return
+
+        # --- password (login step 3) ---
         if state.get("password"):
             state.pop("password", None)
             rt.save_state()
@@ -405,6 +419,8 @@ def _register_handlers(rt: BotRuntime) -> None:
             rt.save_state()
             await _do_login(rt, event)
             return
+
+        # --- interval ---
         if state.get("interval"):
             state.pop("interval", None)
             rt.save_state()
@@ -419,6 +435,8 @@ def _register_handlers(rt: BotRuntime) -> None:
             except Exception:
                 await event.respond("Invalid number.")
             return
+
+        # --- timezone ---
         if state.get("timezone"):
             state.pop("timezone", None)
             rt.save_state()
@@ -432,6 +450,8 @@ def _register_handlers(rt: BotRuntime) -> None:
             except Exception:
                 await event.respond("Invalid timezone.")
             return
+
+        # --- base name ---
         if state.get("base_name"):
             state.pop("base_name", None)
             rt.save_state()
@@ -439,6 +459,8 @@ def _register_handlers(rt: BotRuntime) -> None:
             save_config(CONFIG)
             await event.respond("Base name updated.")
             return
+
+        # --- custom name font ---
         if state.get("custom_name_font"):
             state.pop("custom_name_font", None)
             rt.save_state()
@@ -450,6 +472,8 @@ def _register_handlers(rt: BotRuntime) -> None:
                 save_config(CONFIG)
                 await event.respond("Custom name font saved.")
             return
+
+        # --- custom clock font ---
         if state.get("custom_clock_font"):
             state.pop("custom_clock_font", None)
             rt.save_state()
@@ -461,6 +485,8 @@ def _register_handlers(rt: BotRuntime) -> None:
                 save_config(CONFIG)
                 await event.respond("Custom clock font saved.")
             return
+
+        # --- diamond request amount ---
         if state.get("reqdiamonds"):
             state.pop("reqdiamonds", None)
             rt.save_state()
@@ -700,9 +726,10 @@ async def _handle_qr_login(rt: BotRuntime, event) -> None:
 
 
 # ===========================================================================
-# Login flow (phone + code) — proxy-aware
+# Login flow (phone + code + 2FA) — proxy-aware, stores phone_code_hash
 # ===========================================================================
 async def _do_login(rt: BotRuntime, event) -> None:
+    """Phone → code → 2FA. Stores phone + phone_code_hash in runtime state."""
     phone = rt._pending_targets.get("phone")
     code = rt._pending_targets.get("code")
     password = rt._pending_targets.get("password")
@@ -718,28 +745,68 @@ async def _do_login(rt: BotRuntime, event) -> None:
             return
 
     try:
+        # ---- step 1: send code ----
         if phone and not code:
-            await rt.user_client.send_code_request(phone)
+            sent = await rt.user_client.send_code_request(phone)
+            rt._pending_targets["phone_saved"] = phone
+            rt._pending_targets["phone_code_hash"] = sent.phone_code_hash
+            rt._pending_targets.pop("phone", None)
+            rt._awaiting.pop("phone", None)
             rt._awaiting["code"] = True
             rt.save_state()
             await event.respond("Code sent. Send it with dashes (e.g. 1-2-3-4-5).")
             return
+
+        # ---- step 2: sign in with code ----
         if code:
+            phone_code_hash = rt._pending_targets.get("phone_code_hash")
+            phone_saved = rt._pending_targets.get("phone_saved")
+            if not phone_code_hash or not phone_saved:
+                await event.respond("Session expired. Send /login again.")
+                rt._pending_targets.clear()
+                rt._awaiting.clear()
+                rt.save_state()
+                return
+
             code_clean = code.replace("-", "").replace(" ", "")
             try:
-                await rt.user_client.sign_in(phone, code_clean)
+                await rt.user_client.sign_in(
+                    phone=phone_saved,
+                    code=code_clean,
+                    phone_code_hash=phone_code_hash,
+                )
             except SessionPasswordNeededError:
+                rt._awaiting.pop("code", None)
                 rt._awaiting["password"] = True
+                rt._pending_targets.pop("code", None)
                 rt.save_state()
                 await event.respond("2FA password required. Send it now.")
                 return
+            except Exception as e:
+                if "PhoneCodeInvalid" in e.__class__.__name__:
+                    rt._awaiting["code"] = True
+                    rt._pending_targets.pop("code", None)
+                    rt.save_state()
+                    await event.respond("Wrong code. Try again (with dashes).")
+                    return
+                if "PhoneCodeExpired" in e.__class__.__name__:
+                    rt._awaiting.pop("code", None)
+                    rt._pending_targets.clear()
+                    rt.save_state()
+                    await event.respond("Code expired. Send /login to try again.")
+                    return
+                raise
             rt._pending_targets.clear()
+            rt._awaiting.clear()
             rt.save_state()
             await event.respond("Logged in successfully.")
             return
+
+        # ---- step 3: 2FA password ----
         if password:
             await rt.user_client.sign_in(password=password)
             rt._pending_targets.clear()
+            rt._awaiting.clear()
             rt.save_state()
             await event.respond("Logged in successfully (2FA).")
             return
