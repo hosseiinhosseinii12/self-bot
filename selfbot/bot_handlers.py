@@ -1,8 +1,9 @@
 """Telegram bot runtime — login-first with QR, per-user, group-first jobs.
 
-- Peer group selection via Telegram native UI (KeyboardButtonRequestPeer)
-- Fallback to manual chat_id entry if peer picker unavailable
+- Peer group selection via Telegram native UI
+- Fallback to manual chat_id entry
 - Per-user state, per-user sessions
+- Job creation with full validation + logging
 """
 import asyncio
 import io
@@ -151,7 +152,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         st["awaiting"] = {}
         st["awaiting_peer"] = False
         rt.save_state()
-        # Close any reply keyboard from previous peer picker
+        # close stale reply keyboard
         try:
             await event.respond(" ", buttons=Button.clear())
             try:
@@ -257,19 +258,18 @@ def _register_handlers(rt: BotRuntime) -> None:
             if chat_id is None:
                 return
 
-            # Extract the user who pressed the button
+            # Try every known attribute for the user id
             uid = None
-            user_id_attr = getattr(msg, "user_id", None)
-            if user_id_attr:
-                uid = int(user_id_attr)
-            if uid is None:
-                from_id = getattr(msg, "from_id", None)
-                if from_id is not None and hasattr(from_id, "user_id"):
-                    uid = int(from_id.user_id)
-            if uid is None:
-                peer_id = getattr(msg, "peer_id", None)
-                if peer_id is not None and hasattr(peer_id, "user_id"):
-                    uid = int(peer_id.user_id)
+            for attr in ("user_id", "from_id", "peer_id"):
+                v = getattr(msg, attr, None)
+                if v is None:
+                    continue
+                if hasattr(v, "user_id"):
+                    uid = int(v.user_id)
+                    break
+                if isinstance(v, int):
+                    uid = int(v)
+                    break
             if uid is None:
                 uid = rt.owner_id
 
@@ -282,13 +282,11 @@ def _register_handlers(rt: BotRuntime) -> None:
             draft["target"] = int(chat_id)
             rt.save_state()
 
-            # Close the reply keyboard
             try:
                 await bot.send_message(uid, "✅ Got it.", buttons=Button.clear())
             except Exception:
                 pass
 
-            # Continue to interval step
             await bot.send_message(
                 uid,
                 P.job_interval_text(int(chat_id)),
@@ -309,7 +307,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         except (QueryIdInvalidError, MessageNotModifiedError):
             pass
         except Exception as e:
-            log_bot.warning(f"callback error data={data}: {e}")
+            log_bot.warning(f"callback error data={data}: {type(e).__name__}: {e}")
 
     # ---- text router ----
     @bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
@@ -342,7 +340,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond(f"❌ 2FA failed: {e}")
             return
 
-        # ---- Job draft: manual chat_id (fallback) ----
+        # ---- Job: manual chat_id ----
         if awaiting.get("job_chat_id_manual"):
             awaiting.pop("job_chat_id_manual", None)
             rt.save_state()
@@ -361,7 +359,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             )
             return
 
-        # ---- Job draft: interval custom ----
+        # ---- Job: interval custom ----
         if awaiting.get("job_interval_custom"):
             awaiting.pop("job_interval_custom", None)
             rt.save_state()
@@ -382,7 +380,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("❌ Invalid number.")
             return
 
-        # ---- Job draft: duration custom ----
+        # ---- Job: duration custom ----
         if awaiting.get("job_duration_custom"):
             awaiting.pop("job_duration_custom", None)
             rt.save_state()
@@ -404,7 +402,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 await event.respond("❌ Invalid number.")
             return
 
-        # ---- Job draft: text ----
+        # ---- Job: text ----
         if awaiting.get("job_text"):
             awaiting.pop("job_text", None)
             rt.save_state()
@@ -416,7 +414,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                                 parse_mode="md")
             return
 
-        # ---- Job draft: .txt ----
+        # ---- Job: .txt ----
         if awaiting.get("job_text_file") and event.document:
             awaiting.pop("job_text_file", None)
             rt.save_state()
@@ -648,7 +646,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit(P.login_required_text(), P.login_required_buttons())
         return
 
-    # ---- Auth: phone login ----
+    # ---- Auth: phone ----
     if data == "auth:start_login":
         st["step"] = "phone"
         st["phone"] = None
@@ -662,7 +660,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         )
         return
 
-    # ---- Auth: QR login ----
+    # ---- Auth: QR ----
     if data == "auth:qr_login":
         await _handle_qr_login(rt, uid, event)
         return
@@ -735,7 +733,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "set:timezone":
         st["awaiting"]["timezone"] = True
         rt.save_state()
-        await edit("🌍 Send timezone (e.g. Asia/Tehran, Europe/Berlin):",
+        await edit("🌍 Send timezone (e.g. Asia/Tehran):",
                    [[P._back_btn(b"nav:settings")]])
         return
     if data == "set:language":
@@ -905,33 +903,76 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit("📎 Send a `.txt` file with the message:", [[P._back_btn(b"job:setup:back")]])
         return
 
-    # ---- Confirm ----
+    # ---- Confirm & start ----
     if data == "job:confirm:start":
         draft = st.get("job_draft", {})
         interval = draft.get("interval", 0)
         duration = draft.get("duration", 0)
         text = draft.get("text", "")
         target = draft.get("target")
+
+        log_bot.info(
+            f"job:confirm:start uid={uid} target={target} "
+            f"interval={interval} duration={duration} text_len={len(text or '')}"
+        )
+
         if not target:
             await edit("❌ No target group.", [[P._back_btn(b"nav:jobs")]])
             return
+        if interval < 60:
+            await edit("❌ Interval too small (min 60s).",
+                       [[P._back_btn(b"job:setup:back")]])
+            return
+        if duration > 720:
+            await edit("❌ Duration too large (max 720 min).",
+                       [[P._back_btn(b"job:setup:back")]])
+            return
+        if not text:
+            await edit("❌ No message text.",
+                       [[P._back_btn(b"job:setup:back")]])
+            return
+
         ok, res = J.create_job(uid, target, interval, duration, text)
-        if ok:
-            job = res
-            task = asyncio.create_task(J.run_job(rt.bot_client, job))
-            J.register_task(job["id"], task)
-            st["job_draft"] = {}
-            rt.save_state()
-            await edit(f"✅ Job `{job['id']}` started.\n"
-                       f"Every {interval}s for {duration} min.",
-                       [[Button.inline("📋 Jobs", b"nav:jobs", style="primary")]])
-        else:
+        if not ok:
             if res == "insufficient":
                 bal = E.get_balance(uid)
                 await edit(f"❌ Insufficient diamonds. Need {E.cost_job()}, you have {bal}.",
                            [[P._back_btn(b"job:setup:back")]])
             else:
                 await edit(f"❌ {res}", [[P._back_btn(b"job:setup:back")]])
+            return
+
+        job = res
+        job_id = job["id"]
+
+        try:
+            task = asyncio.create_task(J.run_job(rt.bot_client, job))
+            J.register_task(job_id, task)
+            log_bot.info(f"job task created + registered: id={job_id}")
+        except Exception as e:
+            log_bot.error(f"failed to create job task: {type(e).__name__}: {e}")
+            await edit(f"❌ Failed to start job: {e}",
+                       [[P._back_btn(b"job:setup:back")]])
+            return
+
+        st["job_draft"] = {}
+        rt.save_state()
+
+        try:
+            now_jobs = J.active_jobs(owner_id=uid)
+            log_bot.info(f"active jobs for uid={uid}: {len(now_jobs)}")
+        except Exception as e:
+            log_bot.warning(f"active_jobs check failed: {e}")
+
+        await edit(
+            f"✅ **Job started!**\n\n"
+            f"🆔 `{job_id}`\n"
+            f"🎯 Target: `{target}`\n"
+            f"⏱ Interval: `{interval}` s\n"
+            f"⏳ Duration: `{duration}` min\n\n"
+            f"_First message goes out in a moment._",
+            [[Button.inline("📋 Jobs", b"nav:jobs", style="primary")]],
+        )
         return
 
     if data == "job:setup:back":
