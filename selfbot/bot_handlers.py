@@ -141,19 +141,24 @@ def _owner_only(runtime: BotRuntime):
 
 
 def _guarded(runtime: BotRuntime):
+    """Only check ban + rate-limit. Do NOT block non-owner users."""
     def deco(fn):
         async def wrapper(event, *a, **kw):
             uid = event.sender_id or 0
             if uid and U.is_banned(uid):
                 return
-            if uid and not user_limiter.allow(uid):
+            # Owners bypass rate limit
+            if uid and uid != runtime.owner_id:
+                if not user_limiter.allow(uid):
+                    try:
+                        await event.respond("Rate limited. Please slow down.")
+                    except Exception:
+                        pass
+                    return
                 try:
-                    await event.respond("Rate limited.")
+                    U.touch(uid)
                 except Exception:
                     pass
-                return
-            if uid:
-                U.touch(uid)
             return await fn(event, *a, **kw)
         return wrapper
     return deco
@@ -197,10 +202,11 @@ def _register_handlers(rt: BotRuntime) -> None:
         rt.save_state()
 
     # --- /start -----------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/start$"))
-    @_guarded(rt)
+    @bot.on(events.NewMessage(pattern=r"^/start$", incoming=True))
     async def _start(event):
         uid = event.sender_id
+        if not uid:
+            return
         try:
             U.ensure_user(uid)
         except Exception:
@@ -211,9 +217,17 @@ def _register_handlers(rt: BotRuntime) -> None:
         else:
             await event.respond(P.user_panel_text(uid), buttons=P.user_panel_buttons(uid))
 
+    # --- /help ------------------------------------------------------------
+    @bot.on(events.NewMessage(pattern=r"^/help$", incoming=True))
+    async def _help(event):
+        uid = event.sender_id
+        if uid == rt.owner_id:
+            await event.respond(P.help_text(), buttons=P.help_buttons())
+        else:
+            await event.respond(P.user_help_text(), buttons=P.user_help_buttons())
+
     # --- pairing (only if owner is NOT set) -------------------------------
-    @bot.on(events.NewMessage(pattern=r"^\d{6}$"))
-    @_guarded(rt)
+    @bot.on(events.NewMessage(pattern=r"^\d{6}$", incoming=True))
     async def _pairing(event):
         if rt.owner_id and rt.owner_id != 0:
             return
@@ -228,9 +242,10 @@ def _register_handlers(rt: BotRuntime) -> None:
             await event.respond("Wrong pairing code.")
 
     # --- /login -----------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/login$"))
-    @_owner_only(rt)
+    @bot.on(events.NewMessage(pattern=r"^/login$", incoming=True))
     async def _login(event):
+        if event.sender_id != rt.owner_id:
+            return
         authorized = False
         try:
             authorized = bool(rt.user_client and await rt.user_client.is_user_authorized())
@@ -247,9 +262,10 @@ def _register_handlers(rt: BotRuntime) -> None:
         await event.respond("📱 Send your phone number with country code (e.g. +989121234567).")
 
     # --- /logout ----------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/logout$"))
-    @_owner_only(rt)
+    @bot.on(events.NewMessage(pattern=r"^/logout$", incoming=True))
     async def _logout(event):
+        if event.sender_id != rt.owner_id:
+            return
         try:
             if rt.user_client:
                 await rt.user_client.log_out()
@@ -270,7 +286,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         await event.respond("Logged out and session deleted.")
 
     # --- /account ---------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/account$"))
+    @bot.on(events.NewMessage(pattern=r"^/account$", incoming=True))
     @_guarded(rt)
     async def _account(event):
         uid = event.sender_id
@@ -281,7 +297,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                                 buttons=P.user_account_buttons())
 
     # --- /request ---------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/request$"))
+    @bot.on(events.NewMessage(pattern=r"^/request$", incoming=True))
     @_guarded(rt)
     async def _request(event):
         uid = event.sender_id
@@ -292,7 +308,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                                 buttons=P.user_account_buttons())
 
     # --- /myrequests ------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/myrequests$"))
+    @bot.on(events.NewMessage(pattern=r"^/myrequests$", incoming=True))
     @_guarded(rt)
     async def _myreq(event):
         uid = event.sender_id
@@ -306,7 +322,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         await event.respond("\n".join(lines))
 
     # --- /refer -----------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/refer(?:\s+(\S+))?$"))
+    @bot.on(events.NewMessage(pattern=r"^/refer(?:\s+(\S+))?$", incoming=True))
     @_guarded(rt)
     async def _refer(event):
         code = event.pattern_match.group(1)
@@ -320,8 +336,8 @@ def _register_handlers(rt: BotRuntime) -> None:
         else:
             await event.respond(P.t(msg))
 
-    # --- /name ------------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/name\s+(.+)$"))
+    # --- owner-only commands ---------------------------------------------
+    @bot.on(events.NewMessage(pattern=r"^/name\s+(.+)$", incoming=True))
     @_owner_only(rt)
     async def _name(event):
         base = event.pattern_match.group(1).strip()
@@ -331,8 +347,7 @@ def _register_handlers(rt: BotRuntime) -> None:
             await CLK.write_base_name_sync(rt.user_client)
         await event.respond(f"Base name set to `{base}`.")
 
-    # --- /font ------------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/font\s+(\S+)$"))
+    @bot.on(events.NewMessage(pattern=r"^/font\s+(\S+)$", incoming=True))
     @_owner_only(rt)
     async def _font(event):
         name = event.pattern_match.group(1)
@@ -340,8 +355,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         save_config(CONFIG)
         await event.respond(f"Name font set to `{name}`.")
 
-    # --- /clockfont -------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/clockfont\s+(\S+)$"))
+    @bot.on(events.NewMessage(pattern=r"^/clockfont\s+(\S+)$", incoming=True))
     @_owner_only(rt)
     async def _clockfont(event):
         name = event.pattern_match.group(1)
@@ -349,8 +363,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         save_config(CONFIG)
         await event.respond(f"Clock font set to `{name}`.")
 
-    # --- /tz --------------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/tz\s+(\S+)$"))
+    @bot.on(events.NewMessage(pattern=r"^/tz\s+(\S+)$", incoming=True))
     @_owner_only(rt)
     async def _tz(event):
         zone = event.pattern_match.group(1)
@@ -364,8 +377,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         save_config(CONFIG)
         await event.respond(f"Timezone set to `{zone}`.")
 
-    # --- /interval --------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/interval\s+(\d+)$"))
+    @bot.on(events.NewMessage(pattern=r"^/interval\s+(\d+)$", incoming=True))
     @_owner_only(rt)
     async def _interval(event):
         n = int(event.pattern_match.group(1))
@@ -376,8 +388,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         save_config(CONFIG)
         await event.respond(f"Interval set to {n} min.")
 
-    # --- /on --------------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/on$"))
+    @bot.on(events.NewMessage(pattern=r"^/on$", incoming=True))
     @_owner_only(rt)
     async def _on(event):
         if not rt.user_client:
@@ -388,8 +399,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         CLK.start_clock(rt.user_client)
         await event.respond("Clock ON.", buttons=P.main_panel_buttons())
 
-    # --- /off -------------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/off$"))
+    @bot.on(events.NewMessage(pattern=r"^/off$", incoming=True))
     @_owner_only(rt)
     async def _off(event):
         if not rt.user_client:
@@ -398,8 +408,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         await CLK.stop_clock(rt.user_client)
         await event.respond("Clock OFF.", buttons=P.main_panel_buttons())
 
-    # --- /status ----------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/status$"))
+    @bot.on(events.NewMessage(pattern=r"^/status$", incoming=True))
     @_guarded(rt)
     async def _status(event):
         uid = event.sender_id
@@ -409,14 +418,13 @@ def _register_handlers(rt: BotRuntime) -> None:
             await event.respond(P.user_account_text(uid),
                                 buttons=P.user_account_buttons())
 
-    # --- /memory ----------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^/memory$"))
+    @bot.on(events.NewMessage(pattern=r"^/memory$", incoming=True))
     @_owner_only(rt)
     async def _memory(event):
         await event.respond(P.memory_text(), buttons=P.memory_buttons())
 
-    # --- .rep -------------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^\.rep\s+(\d+)\s+(\d+)\s+(.+)$"))
+    # --- .rep / .stop -----------------------------------------------------
+    @bot.on(events.NewMessage(pattern=r"^\.rep\s+(\d+)\s+(\d+)\s+(.+)$", incoming=True))
     @_owner_only(rt)
     async def _rep(event):
         if event.chat_id != rt.owner_id:
@@ -437,8 +445,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         J.register_task(job["id"], task)
         await event.respond(P.t("job_created", id=job["id"], every=interval, duration=duration))
 
-    # --- .stop ------------------------------------------------------------
-    @bot.on(events.NewMessage(pattern=r"^\.stop$"))
+    @bot.on(events.NewMessage(pattern=r"^\.stop$", incoming=True))
     @_owner_only(rt)
     async def _stop(event):
         if event.chat_id != rt.owner_id:
@@ -491,8 +498,13 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- callbacks --------------------------------------------------------
     @bot.on(events.CallbackQuery())
-    @_guarded(rt)
     async def _cb(event):
+        # Rate-limit regular users
+        uid = event.sender_id
+        if uid and uid != rt.owner_id:
+            if not user_limiter.allow(uid):
+                await _safe_answer(event, "Rate limited.", alert=True)
+                return
         await _safe_answer(event)
         data = event.data.decode() if event.data else ""
         try:
@@ -502,11 +514,15 @@ def _register_handlers(rt: BotRuntime) -> None:
         except Exception as e:
             log_bot.warning(f"callback error data={data}: {e}")
 
-    # --- text router ------------------------------------------------------
-    @bot.on(events.NewMessage())
-    @_guarded(rt)
+    # --- text router (fallback for awaiting inputs) -----------------------
+    @bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
     async def _text(event):
         text = (event.raw_text or "").strip()
+        if not text:
+            return
+        # Skip commands (handled above)
+        if text.startswith("/"):
+            return
 
         # === NON-OWNER user flow ===
         if event.sender_id != rt.owner_id:
@@ -527,8 +543,8 @@ def _register_handlers(rt: BotRuntime) -> None:
             return
 
         # === OWNER flow ===
-        if text.startswith(("/", ".")):
-            return
+        if text.startswith("."):
+            return  # handled by .rep / .stop
 
         step = state.get("step") or "idle"
         awaiting = state.get("awaiting") or {}
@@ -561,11 +577,9 @@ def _register_handlers(rt: BotRuntime) -> None:
                 draft = state.setdefault("job_draft", {})
                 draft["interval"] = n
                 rt.save_state()
-                await event.respond(
-                    P.job_duration_text(n),
-                    buttons=P.job_duration_buttons(n),
-                    parse_mode="md",
-                )
+                await event.respond(P.job_duration_text(n),
+                                    buttons=P.job_duration_buttons(n),
+                                    parse_mode="md")
             except Exception:
                 await event.respond("Invalid number.")
             return
@@ -582,11 +596,9 @@ def _register_handlers(rt: BotRuntime) -> None:
                 draft = state.setdefault("job_draft", {})
                 draft["duration"] = n
                 rt.save_state()
-                await event.respond(
-                    P.job_text_prompt(),
-                    buttons=P.job_text_buttons(),
-                    parse_mode="md",
-                )
+                await event.respond(P.job_text_prompt(),
+                                    buttons=P.job_text_buttons(),
+                                    parse_mode="md")
             except Exception:
                 await event.respond("Invalid number.")
             return
@@ -598,11 +610,9 @@ def _register_handlers(rt: BotRuntime) -> None:
             draft = state.setdefault("job_draft", {})
             draft["text"] = text
             rt.save_state()
-            await event.respond(
-                P.job_confirm_text(draft),
-                buttons=P.job_confirm_buttons(draft),
-                parse_mode="md",
-            )
+            await event.respond(P.job_confirm_text(draft),
+                                buttons=P.job_confirm_buttons(draft),
+                                parse_mode="md")
             return
 
         # --- JOB DRAFT: .txt file ---
@@ -615,11 +625,9 @@ def _register_handlers(rt: BotRuntime) -> None:
                 draft = state.setdefault("job_draft", {})
                 draft["text"] = file_text
                 rt.save_state()
-                await event.respond(
-                    P.job_confirm_text(draft),
-                    buttons=P.job_confirm_buttons(draft),
-                    parse_mode="md",
-                )
+                await event.respond(P.job_confirm_text(draft),
+                                    buttons=P.job_confirm_buttons(draft),
+                                    parse_mode="md")
             except Exception as e:
                 await event.respond(f"❌ Could not read file: {e}")
             return
@@ -848,9 +856,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             except Exception:
                 pass
 
-    # =====================================================================
-    # USER (non-owner) callbacks
-    # =====================================================================
+    # ===== USER (non-owner) callbacks =====
     if data.startswith("user:") and uid != rt.owner_id:
         if data == "user:home":
             await edit(P.user_panel_text(uid), P.user_panel_buttons(uid))
@@ -913,9 +919,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             return
         return
 
-    # =====================================================================
-    # OWNER callbacks — navigation
-    # =====================================================================
+    # ===== OWNER callbacks =====
     if data == "nav:main":
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
     if data == "nav:status":
@@ -933,25 +937,19 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "nav:help":
         await edit(P.help_text(), P.help_buttons()); return
 
-    # --- clock on/off ---
     if data == "clock:on":
         if not rt.user_client:
-            await _safe_answer(event, "No user session.", alert=True)
-            return
+            await _safe_answer(event, "No user session.", alert=True); return
         CONFIG["clock_on"] = True
         save_config(CONFIG)
         CLK.start_clock(rt.user_client)
-        await edit(P.main_panel_text(), P.main_panel_buttons())
-        return
+        await edit(P.main_panel_text(), P.main_panel_buttons()); return
     if data == "clock:off":
         if not rt.user_client:
-            await _safe_answer(event, "No user session.", alert=True)
-            return
+            await _safe_answer(event, "No user session.", alert=True); return
         await CLK.stop_clock(rt.user_client)
-        await edit(P.main_panel_text(), P.main_panel_buttons())
-        return
+        await edit(P.main_panel_text(), P.main_panel_buttons()); return
 
-    # --- settings ---
     if data == "set:interval":
         rt.awaiting["interval"] = True
         rt.save_state()
@@ -965,16 +963,13 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline(P.t("btn_back"), b"nav:settings")]])
         return
     if data == "set:language":
-        await edit(P.language_text(), P.language_buttons())
-        return
+        await edit(P.language_text(), P.language_buttons()); return
     if data.startswith("set:lang:"):
         lang = data.split(":")[-1]
         CONFIG["language"] = lang
         save_config(CONFIG)
-        await edit(P.language_text(), P.language_buttons())
-        return
+        await edit(P.language_text(), P.language_buttons()); return
 
-    # --- appearance ---
     if data == "app:base":
         rt.awaiting["base_name"] = True
         rt.save_state()
@@ -990,8 +985,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data.startswith("app:namefont:"):
         CONFIG["name_font"] = data.split(":")[-1]
         save_config(CONFIG)
-        await edit(P.appearance_text(), P.appearance_buttons())
-        return
+        await edit(P.appearance_text(), P.appearance_buttons()); return
     if data == "app:clockfont":
         from .fonts import DIGIT_FONTS
         rows = [[Button.inline(n, f"app:clockfont:{n}".encode())] for n in DIGIT_FONTS.keys()]
@@ -1001,8 +995,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data.startswith("app:clockfont:"):
         CONFIG["clock_font"] = data.split(":")[-1]
         save_config(CONFIG)
-        await edit(P.appearance_text(), P.appearance_buttons())
-        return
+        await edit(P.appearance_text(), P.appearance_buttons()); return
     if data == "app:customname":
         rt.awaiting["custom_name_font"] = True
         rt.save_state()
@@ -1016,24 +1009,20 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline(P.t("btn_back"), b"nav:appearance")]])
         return
 
-    # --- job creation flow ---
+    # Job creation
     if data == "job:new":
         rt._state["job_draft"] = {}
         rt._state["awaiting"] = {}
         rt.save_state()
         await edit(P.job_setup_text(), P.job_setup_buttons())
         return
-
     if data.startswith("job:interval:"):
         val = data.split(":")[2]
         if val == "custom":
             rt.awaiting["job_interval_custom"] = True
             rt.save_state()
-            await edit(
-                "**Step 1/3 — Custom interval**\n\n"
-                "Send a number (seconds, min 60):",
-                [[Button.inline("◀️ Back", b"job:setup:back")]],
-            )
+            await edit("**Step 1/3 — Custom interval**\n\nSend a number (seconds, min 60):",
+                       [[Button.inline("◀️ Back", b"job:setup:back")]])
             return
         try:
             interval = int(val)
@@ -1044,17 +1033,13 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         rt.save_state()
         await edit(P.job_duration_text(interval), P.job_duration_buttons(interval))
         return
-
     if data.startswith("job:duration:"):
         val = data.split(":")[2]
         if val == "custom":
             rt.awaiting["job_duration_custom"] = True
             rt.save_state()
-            await edit(
-                "**Step 2/3 — Custom duration**\n\n"
-                "Send a number (minutes):",
-                [[Button.inline("◀️ Back", b"job:setup:back")]],
-            )
+            await edit("**Step 2/3 — Custom duration**\n\nSend a number (minutes):",
+                       [[Button.inline("◀️ Back", b"job:setup:back")]])
             return
         try:
             duration = int(val)
@@ -1065,7 +1050,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         rt.save_state()
         await edit(P.job_text_prompt(), P.job_text_buttons())
         return
-
     if data == "job:text:enter":
         rt.awaiting["job_text"] = True
         rt.save_state()
@@ -1078,7 +1062,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit("Send a `.txt` file with the message:",
                    [[Button.inline("◀️ Back", b"job:setup:back")]])
         return
-
     if data == "job:confirm:start":
         draft = rt._state.get("job_draft", {})
         interval = draft.get("interval", 0)
@@ -1096,16 +1079,12 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             J.register_task(job["id"], task)
             rt._state["job_draft"] = {}
             rt.save_state()
-            await edit(
-                f"✅ Job `{job['id']}` started.\n"
-                f"Every {interval}s for {duration} min.",
-                [[Button.inline("📋 Jobs", b"nav:jobs")]],
-            )
+            await edit(f"✅ Job `{job['id']}` started.\nEvery {interval}s for {duration} min.",
+                       [[Button.inline("📋 Jobs", b"nav:jobs")]])
         else:
             await edit(f"❌ {res}",
                        [[Button.inline("◀️ Back", b"job:setup:back")]])
         return
-
     if data == "job:setup:back":
         rt._state["job_draft"] = {}
         for k in ("job_interval_custom", "job_duration_custom",
@@ -1114,24 +1093,17 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         rt.save_state()
         await edit(P.job_setup_text(), P.job_setup_buttons())
         return
-
     if data == "job:pick_target":
         from .panels import group_selection_reply_buttons, group_selection_text
         kb = group_selection_reply_buttons()
         if kb is None:
-            await edit(
-                "❌ Peer selection unavailable.\n"
-                "Your Telethon version is too old.",
-                [[Button.inline("◀️ Back", b"nav:jobs")]],
-            )
+            await edit("❌ Peer selection unavailable.",
+                       [[Button.inline("◀️ Back", b"nav:jobs")]])
             return
         await bot.send_message(event.chat_id, group_selection_text(), buttons=kb)
         return
-
-    # --- jobs list / stop / templates ---
     if data == "job:list":
-        await edit(P.jobs_text(), P.jobs_buttons())
-        return
+        await edit(P.jobs_text(), P.jobs_buttons()); return
     if data == "job:stopall":
         n = J.stop_all()
         await edit(f"Stopped {n} jobs.",
@@ -1154,7 +1126,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline(P.t("btn_back"), b"nav:jobs")]])
         return
 
-    # --- account ---
+    # Account
     if data == "acc:reqdiamonds":
         rt.awaiting["reqdiamonds"] = True
         rt.save_state()
@@ -1162,8 +1134,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline(P.t("btn_back"), b"nav:account")]])
         return
     if data == "acc:reqsub":
-        await edit(P.plan_text(), P.plan_buttons())
-        return
+        await edit(P.plan_text(), P.plan_buttons()); return
     if data.startswith("reqsub:"):
         plan = data.split(":")[-1]
         R.create_subscription_request(rt.owner_id, plan)
@@ -1185,23 +1156,18 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline(P.t("btn_back"), b"nav:account")]])
         return
     if data == "acc:notify":
-        await edit(P.notify_text(), P.notify_buttons())
-        return
+        await edit(P.notify_text(), P.notify_buttons()); return
     if data.startswith("notify:"):
         key = data.split(":", 1)[1]
         u = U.get_user(rt.owner_id) or {}
         n = (u.get("notify") or {})
         new_val = not bool(n.get(key, True))
         U.set_notify(rt.owner_id, key, new_val)
-        await edit(P.notify_text(), P.notify_buttons())
-        return
-
-    # --- QR login ---
+        await edit(P.notify_text(), P.notify_buttons()); return
     if data == "acc:qrlogin":
-        await _handle_qr_login(rt, event)
-        return
+        await _handle_qr_login(rt, event); return
 
-    # --- memory ---
+    # Memory
     if data == "mem:view":
         from .store import memory_store
         txt = "```\n" + (str(memory_store.all())[:3500]) + "\n```"
