@@ -183,7 +183,7 @@ async def _boot_async(runtime) -> None:
         log_bot.error(f"bot client failed: {e}")
         return
 
-    # 3b) Pairing code (only meaningful until owner pairs)
+    # 3b) Pairing code
     code = getattr(runtime, "pairing_code", "------")
     log.info("╔════════════════════════════════════════════╗")
     log.info(f"║  PAIRING CODE:  {code}                    ║")

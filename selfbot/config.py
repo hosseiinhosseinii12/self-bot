@@ -110,7 +110,6 @@ def release_lock() -> None:
 
 
 def get_api_credentials() -> tuple:
-    """Return (api_id, api_hash) with env override support."""
     api_id = CONFIG.get("api_id") or PUBLIC_API_ID
     api_hash = CONFIG.get("api_hash") or PUBLIC_API_HASH
     return int(api_id), str(api_hash)
@@ -118,3 +117,7 @@ def get_api_credentials() -> tuple:
 
 def android_fallback() -> tuple:
     return ANDROID_API_ID, ANDROID_API_HASH
+
+
+def get_proxy_test_url() -> str:
+    return "https://api.ipify.org"

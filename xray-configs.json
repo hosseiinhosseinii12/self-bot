@@ -1,0 +1,44 @@
+{
+  "active": "default",
+  "configs": {
+    "default": {
+      "name": "VLESS Worker (default)",
+      "type": "vless",
+      "url": "vless://acb8ddca-b6b2-4821-8db1-34b18bb31d63@3ybdmvfe58jwrqbia1z9.v2config.workers.dev:443?encryption=none&security=tls&sni=3ybdmvfe58jwrqbia1z9.v2config.workers.dev&fp=chrome&alpn=http%2F1.1&type=ws&host=3ybdmvfe58jwrqbia1z9.v2config.workers.dev&path=%2Fvl%2FnTTZbCCwhkKVQ75evMl3biwR1h4lbdoF%3Fed%3D2560",
+      "xray_outbound": {
+        "protocol": "vless",
+        "settings": {
+          "vnext": [
+            {
+              "address": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev",
+              "port": 443,
+              "users": [
+                {
+                  "id": "acb8ddca-b6b2-4821-8db1-34b18bb31d63",
+                  "encryption": "none",
+                  "flow": ""
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "ws",
+          "security": "tls",
+          "tlsSettings": {
+            "serverName": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev",
+            "fingerprint": "chrome",
+            "allowInsecure": false,
+            "alpn": ["http/1.1"]
+          },
+          "wsSettings": {
+            "path": "/vl/nTTZbCCwhkKVQ75evMl3biwR1h4lbdoF?ed=2560",
+            "headers": {
+              "Host": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev"
+            }
+          }
+        }
+      }
+    }
+  }
+}

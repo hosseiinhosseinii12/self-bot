@@ -1,7 +1,8 @@
 """Flask admin panel: dark theme, Chart.js, users, requests, transactions,
-shop, audit, backups, broadcast, 2FA."""
+shop, audit, backups, broadcast, 2FA, proxy configs."""
 import functools
 import io
+import json
 import os
 import secrets
 import string
@@ -178,14 +179,10 @@ label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px;}
 .chart-card{padding:18px;}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
 @media (max-width:900px){.grid-2{grid-template-columns:1fr;}}
-.tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;}
-.tabs a{padding:8px 14px;border-radius:9px;background:var(--card);
-  color:var(--muted);border:1px solid var(--border);font-size:13px;}
-.tabs a.active{color:white;background:linear-gradient(90deg,var(--blue),var(--purple));
-  border:none;}
 .login-box{max-width:380px;margin:100px auto;padding:30px;
   background:var(--card);border-radius:16px;border:1px solid var(--border);}
 .muted{color:var(--muted);font-size:13px;}
+.mono{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:12px;}
 </style>
 </head>
 <body>
@@ -198,6 +195,7 @@ label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px;}
   <a href="{{ url_for('transactions_page') }}" class="{{ 'active' if page=='tx' else '' }}">Transactions</a>
   <a href="{{ url_for('shop_page') }}" class="{{ 'active' if page=='shop' else '' }}">Shop</a>
   <a href="{{ url_for('audit_page') }}" class="{{ 'active' if page=='audit' else '' }}">Audit</a>
+  <a href="{{ url_for('proxy_page') }}" class="{{ 'active' if page=='proxy' else '' }}">Proxy</a>
   <a href="{{ url_for('backups_page') }}" class="{{ 'active' if page=='backups' else '' }}">Backups</a>
   <a href="{{ url_for('broadcast_page') }}" class="{{ 'active' if page=='broadcast' else '' }}">Broadcast</a>
   <a href="{{ url_for('settings_page') }}" class="{{ 'active' if page=='settings' else '' }}">Settings</a>
@@ -645,6 +643,97 @@ TOTP_TEMPLATE = """
 """
 
 
+PROXY_TEMPLATE = """
+<h1>Proxy Configs</h1>
+<p class="muted">Manage VLESS/Xray configs. Test latency to Telegram DCs and egress IP.</p>
+
+<div class="card" style="margin-top:16px">
+  <h2>Active config: <code>{{ active }}</code></h2>
+  <button class="success" id="test-active-btn">Test active config</button>
+  <pre id="test-active-result" style="margin-top:12px;white-space:pre-wrap;
+       background:#0b0f1a;padding:12px;border-radius:9px;font-size:12px;
+       color:#8fa0bd;display:none"></pre>
+</div>
+
+<table style="margin-top:18px">
+  <tr><th>Key</th><th>Name</th><th>URL</th><th>Status</th><th>Actions</th></tr>
+  {% for c in configs %}
+  <tr>
+    <td><code>{{ c.key }}</code></td>
+    <td>{{ c.name }}</td>
+    <td class="mono">{{ c.url_short }}</td>
+    <td>{% if c.active %}<span class="pill ok">active</span>{% else %}<span class="pill">idle</span>{% endif %}</td>
+    <td>
+      <button class="btn small" onclick="testConfig('{{ c.key }}')">Test</button>
+      {% if not c.active %}
+      <form method="post" action="{{ url_for('proxy_activate', key=c.key) }}" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn small success">Activate</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div id="test-result" style="margin-top:16px"></div>
+
+<div class="card" style="margin-top:22px">
+  <h2>Add config</h2>
+  <form method="post" action="{{ url_for('proxy_add') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="row">
+      <div><label>Key</label><input name="key" placeholder="us-1"></div>
+      <div><label>Name</label><input name="name" placeholder="US Server 1"></div>
+    </div>
+    <div><label>VLESS URL</label><input name="url" style="max-width:100%" placeholder="vless://..."></div>
+    <div>
+      <label>Outbound JSON</label>
+      <textarea name="outbound" rows="12" style="max-width:100%;font-family:monospace;font-size:12px"
+placeholder='{"protocol":"vless","settings":{"vnext":[{"address":"...","port":443,"users":[{"id":"...","encryption":"none","flow":""}]}]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"serverName":"...","fingerprint":"chrome","alpn":["http/1.1"]},"wsSettings":{"path":"/...","headers":{"Host":"..."}}}}'></textarea>
+    </div>
+    <button style="margin-top:12px">Add</button>
+  </form>
+</div>
+
+<script>
+async function testConfig(key) {
+  const el = document.getElementById('test-result');
+  el.innerHTML = '<div class="card">Testing <code>' + key + '</code> ...</div>';
+  const csrf = '{{ csrf }}';
+  try {
+    const r = await fetch('/admin/proxy/test/' + key, {
+      method: 'POST',
+      headers: {'X-CSRF-Token': csrf}
+    });
+    const data = await r.json();
+    el.innerHTML = '<div class="card"><h2>Result: ' + key + '</h2><pre style="white-space:pre-wrap;color:#8fa0bd;font-size:12px">' +
+      JSON.stringify(data, null, 2) + '</pre></div>';
+  } catch (e) {
+    el.innerHTML = '<div class="card"><p style="color:#ef4444">Error: ' + e + '</p></div>';
+  }
+}
+document.getElementById('test-active-btn').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  const el = document.getElementById('test-active-result');
+  el.style.display = 'block';
+  el.textContent = 'Testing active config...';
+  const csrf = '{{ csrf }}';
+  try {
+    const r = await fetch('/admin/proxy/test', {
+      method: 'POST',
+      headers: {'X-CSRF-Token': csrf}
+    });
+    const data = await r.json();
+    el.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    el.textContent = 'Error: ' + e;
+  }
+});
+</script>
+"""
+
+
 # ===========================================================================
 # App factory
 # ===========================================================================
@@ -655,7 +744,6 @@ def _is_https_hint() -> bool:
 def build_admin_app() -> Flask:
     app = Flask(__name__, static_folder=None)
 
-    # --- secret key -------------------------------------------------------
     secret = os.environ.get("SECRET_KEY") or os.environ.get("ADMIN_SECRET_KEY")
     if not secret:
         secret_file = DB_PATH / "flask_secret.txt"
@@ -666,7 +754,6 @@ def build_admin_app() -> Flask:
             secret_file.write_text(secret)
     app.secret_key = secret
 
-    # --- session security -------------------------------------------------
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     if _is_https_hint():
@@ -1173,6 +1260,92 @@ def build_admin_app() -> Flask:
         audit_record(0, "totp_disable", ip=request.remote_addr)
         flash("2FA disabled.")
         return redirect(url_for("totp_page"))
+
+    # ===================================================================
+    # Proxy configs
+    # ===================================================================
+    @app.route("/admin/proxy")
+    @_login_required
+    def proxy_page():
+        from .proxy_test import list_configs
+        data = list_configs()
+        configs = data.get("configs", {})
+        active = data.get("active", "default")
+
+        rows = []
+        for key, cfg in configs.items():
+            rows.append({
+                "key": key,
+                "name": cfg.get("name", key),
+                "url_short": ((cfg.get("url") or "")[:60] + "...")
+                             if len((cfg.get("url") or "")) > 60
+                             else (cfg.get("url") or ""),
+                "active": (key == active),
+            })
+
+        body = render_template_string(
+            PROXY_TEMPLATE, configs=rows, active=active, csrf=_csrf_token(),
+        )
+        return render_template_string(BASE_TEMPLATE, title="Proxy Configs", body=body,
+                                      page="proxy")
+
+    @app.route("/admin/proxy/add", methods=["POST"])
+    @_login_required
+    def proxy_add():
+        _csrf_check()
+        from .proxy_test import add_config
+        key = request.form.get("key", "").strip()
+        name = request.form.get("name", "").strip() or key
+        url = request.form.get("url", "").strip()
+        outbound_json = request.form.get("outbound", "").strip()
+        if not key or not url or not outbound_json:
+            flash("Key, URL and outbound JSON are required.", "error")
+            return redirect(url_for("proxy_page"))
+        try:
+            outbound = json.loads(outbound_json)
+        except Exception as e:
+            flash(f"Invalid outbound JSON: {e}", "error")
+            return redirect(url_for("proxy_page"))
+        add_config(key, name, url, outbound)
+        audit_record(0, "proxy_add", target=key, ip=request.remote_addr)
+        flash(f"Config {key} added.")
+        return redirect(url_for("proxy_page"))
+
+    @app.route("/admin/proxy/activate/<key>", methods=["POST"])
+    @_login_required
+    def proxy_activate(key: str):
+        _csrf_check()
+        from .proxy_test import set_active
+        if set_active(key):
+            audit_record(0, "proxy_activate", target=key, ip=request.remote_addr)
+            flash(f"Config {key} activated. Restart the service to apply.")
+        else:
+            flash(f"Config {key} not found.", "error")
+        return redirect(url_for("proxy_page"))
+
+    @app.route("/admin/proxy/test/<key>", methods=["POST"])
+    @_login_required
+    def proxy_test_run(key: str):
+        _csrf_check()
+        from .proxy_test import test_config
+        try:
+            result = test_config(key)
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        return jsonify(result)
+
+    @app.route("/admin/proxy/test", methods=["POST"])
+    @_login_required
+    def proxy_test_active():
+        _csrf_check()
+        from .proxy_test import list_configs, test_config
+        data = list_configs()
+        key = data.get("active", "default")
+        try:
+            result = test_config(key)
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        return jsonify(result)
 
     return app
 
