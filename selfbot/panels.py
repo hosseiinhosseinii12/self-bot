@@ -1,4 +1,11 @@
-"""Inline keyboard panels for the Telegram bot (English + Persian)."""
+"""Inline keyboard panels for the Telegram bot (English + Persian).
+
+Button styles:
+  - success = green
+  - danger  = red
+  - primary = blue
+  - (no style) = transparent/default (used for Back buttons)
+"""
 from typing import List, Optional
 
 from .config import CONFIG
@@ -17,15 +24,15 @@ except ImportError:
 # ---------------------------------------------------------------------------
 def main_panel_buttons() -> List[List]:
     return [
-        [Button.inline(t("btn_on"), b"clock:on"),
-         Button.inline(t("btn_off"), b"clock:off")],
-        [Button.inline(t("btn_status"), b"nav:status")],
-        [Button.inline(t("btn_settings"), b"nav:settings"),
-         Button.inline(t("btn_appearance"), b"nav:appearance")],
-        [Button.inline(t("btn_jobs"), b"nav:jobs"),
-         Button.inline(t("btn_account"), b"nav:account")],
-        [Button.inline(t("btn_memory"), b"nav:memory"),
-         Button.inline(t("btn_help"), b"nav:help")],
+        [Button.inline(t("btn_on"), b"clock:on", style="success"),
+         Button.inline(t("btn_off"), b"clock:off", style="danger")],
+        [Button.inline(t("btn_status"), b"nav:status", style="primary")],
+        [Button.inline(t("btn_settings"), b"nav:settings", style="primary"),
+         Button.inline(t("btn_appearance"), b"nav:appearance", style="primary")],
+        [Button.inline(t("btn_jobs"), b"nav:jobs", style="primary"),
+         Button.inline(t("btn_account"), b"nav:account", style="primary")],
+        [Button.inline(t("btn_memory"), b"nav:memory", style="primary"),
+         Button.inline(t("btn_help"), b"nav:help", style="primary")],
     ]
 
 
@@ -91,9 +98,9 @@ def status_text() -> str:
 # ---------------------------------------------------------------------------
 def settings_buttons() -> List[List]:
     return [
-        [Button.inline("⏱ " + t("interval"), b"set:interval"),
-         Button.inline("🌍 " + t("timezone"), b"set:timezone")],
-        [Button.inline("🗣 " + t("language"), b"set:language")],
+        [Button.inline("⏱ " + t("interval"), b"set:interval", style="primary"),
+         Button.inline("🌍 " + t("timezone"), b"set:timezone", style="primary")],
+        [Button.inline("🗣 " + t("language"), b"set:language", style="primary")],
         [Button.inline(t("btn_back"), b"nav:main")],
     ]
 
@@ -112,11 +119,11 @@ def settings_text() -> str:
 # ---------------------------------------------------------------------------
 def appearance_buttons() -> List[List]:
     return [
-        [Button.inline("✏️ " + t("base_name"), b"app:base")],
-        [Button.inline("🔤 " + t("name_font"), b"app:namefont"),
-         Button.inline("🕐 " + t("clock_font"), b"app:clockfont")],
-        [Button.inline("🅰️ Custom name font", b"app:customname"),
-         Button.inline("0️⃣ Custom clock font", b"app:customclock")],
+        [Button.inline("✏️ " + t("base_name"), b"app:base", style="primary")],
+        [Button.inline("🔤 " + t("name_font"), b"app:namefont", style="primary"),
+         Button.inline("🕐 " + t("clock_font"), b"app:clockfont", style="primary")],
+        [Button.inline("🅰️ Custom name font", b"app:customname", style="primary"),
+         Button.inline("0️⃣ Custom clock font", b"app:customclock", style="primary")],
         [Button.inline(t("btn_back"), b"nav:main")],
     ]
 
@@ -141,10 +148,11 @@ def jobs_buttons() -> List[List]:
     owner = int(CONFIG.get("owner_id", 338266658))
     lim = plan_limits(owner)
     return [
-        [Button.inline(f"➕ New job ({active_count()}/{lim['max_jobs']})", b"job:new")],
-        [Button.inline("📋 " + t("btn_jobs"), b"job:list"),
-         Button.inline("⏹ Stop all", b"job:stopall")],
-        [Button.inline("📁 Templates", b"job:templates")],
+        [Button.inline(f"➕ New job ({active_count()}/{lim['max_jobs']})",
+                       b"job:new", style="success")],
+        [Button.inline("📋 " + t("btn_jobs"), b"job:list", style="primary"),
+         Button.inline("⏹ Stop all", b"job:stopall", style="danger")],
+        [Button.inline("📁 Templates", b"job:templates", style="primary")],
         [Button.inline(t("btn_back"), b"nav:main")],
     ]
 
@@ -180,12 +188,12 @@ def jobs_text() -> str:
 # ---------------------------------------------------------------------------
 def account_buttons() -> List[List]:
     return [
-        [Button.inline("💎 " + t("request_diamonds"), b"acc:reqdiamonds")],
-        [Button.inline("⭐ " + t("request_subscription"), b"acc:reqsub")],
-        [Button.inline("📜 " + t("my_requests"), b"acc:myreq")],
-        [Button.inline("🤝 " + t("your_referral").split(":")[0], b"acc:referral")],
-        [Button.inline("🔔 " + t("notify_prefs"), b"acc:notify")],
-        [Button.inline("🔐 QR Login", b"acc:qrlogin")],
+        [Button.inline("💎 " + t("request_diamonds"), b"acc:reqdiamonds", style="primary")],
+        [Button.inline("⭐ " + t("request_subscription"), b"acc:reqsub", style="primary")],
+        [Button.inline("📜 " + t("my_requests"), b"acc:myreq", style="primary")],
+        [Button.inline("🤝 " + t("your_referral").split(":")[0], b"acc:referral", style="primary")],
+        [Button.inline("🔔 " + t("notify_prefs"), b"acc:notify", style="primary")],
+        [Button.inline("🔐 QR Login", b"acc:qrlogin", style="success")],
         [Button.inline(t("btn_back"), b"nav:main")],
     ]
 
@@ -213,10 +221,10 @@ def account_text() -> str:
 # ---------------------------------------------------------------------------
 def memory_buttons() -> List[List]:
     return [
-        [Button.inline("🧠 View memory", b"mem:view")],
-        [Button.inline("🗑 Clear memory", b"mem:clear"),
-         Button.inline("♻️ Clear my state", b"mem:clearstate")],
-        [Button.inline("📤 Dump JSON", b"mem:dump")],
+        [Button.inline("🧠 View memory", b"mem:view", style="primary")],
+        [Button.inline("🗑 Clear memory", b"mem:clear", style="danger"),
+         Button.inline("♻️ Clear my state", b"mem:clearstate", style="danger")],
+        [Button.inline("📤 Dump JSON", b"mem:dump", style="primary")],
         [Button.inline(t("btn_back"), b"nav:main")],
     ]
 
@@ -273,8 +281,8 @@ def help_text() -> str:
 # ---------------------------------------------------------------------------
 def language_buttons() -> List[List]:
     return [
-        [Button.inline("English", b"set:lang:en"),
-         Button.inline("فارسی", b"set:lang:fa")],
+        [Button.inline("English", b"set:lang:en", style="primary"),
+         Button.inline("فارسی", b"set:lang:fa", style="primary")],
         [Button.inline(t("btn_back"), b"nav:settings")],
     ]
 
@@ -293,12 +301,17 @@ def notify_buttons() -> List[List]:
     owner = int(CONFIG.get("owner_id", 338266658))
     u = get_user(owner) or {}
     notify = u.get("notify") or {}
+
     def mark(k):
         return "✅" if notify.get(k, True) else "❌"
+
     return [
-        [Button.inline(f"{mark('job_completion')} {t('notify_job')}", b"notify:job_completion")],
-        [Button.inline(f"{mark('diamond_changes')} {t('notify_diamond')}", b"notify:diamond_changes")],
-        [Button.inline(f"{mark('subscription_expiry')} {t('notify_expiry')}", b"notify:subscription_expiry")],
+        [Button.inline(f"{mark('job_completion')} {t('notify_job')}",
+                       b"notify:job_completion", style="primary")],
+        [Button.inline(f"{mark('diamond_changes')} {t('notify_diamond')}",
+                       b"notify:diamond_changes", style="primary")],
+        [Button.inline(f"{mark('subscription_expiry')} {t('notify_expiry')}",
+                       b"notify:subscription_expiry", style="primary")],
         [Button.inline(t("btn_back"), b"nav:account")],
     ]
 
@@ -312,9 +325,9 @@ def notify_text() -> str:
 # ---------------------------------------------------------------------------
 def plan_buttons() -> List[List]:
     return [
-        [Button.inline("Basic — 30 days", b"reqsub:basic")],
-        [Button.inline("Pro — 30 days", b"reqsub:pro")],
-        [Button.inline("VIP — 30 days", b"reqsub:vip")],
+        [Button.inline("Basic — 30 days", b"reqsub:basic", style="primary")],
+        [Button.inline("Pro — 30 days", b"reqsub:pro", style="primary")],
+        [Button.inline("VIP — 30 days", b"reqsub:vip", style="primary")],
         [Button.inline(t("btn_back"), b"nav:account")],
     ]
 

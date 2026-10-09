@@ -3,9 +3,9 @@
 Login flow uses state["step"] = "idle" | "phone" | "code" | "2fa"
 and stores phone + hash in state.
 
-Phone step tries ResendCodeRequest as a non-fatal attempt to force SMS
-delivery (Telegram may or may not honor it). QR login uses Telethon's
-native client.qr_login().
+Phone step tries ResendCodeRequest ONCE per session as a non-fatal attempt
+to force SMS. Handles SendCodeUnavailableError gracefully.
+QR login uses Telethon's native client.qr_login().
 """
 import asyncio
 import io
@@ -70,6 +70,7 @@ class BotRuntime:
             "awaiting": {},
             "pending_targets": {},
             "peer_request_open": False,
+            "_resend_tried": False,
         }
         self._qr_client = None
         self._qr_token_hex: Optional[str] = None
@@ -92,6 +93,7 @@ class BotRuntime:
             "awaiting": self._state.get("awaiting") or {},
             "pending_targets": self._state.get("pending_targets") or {},
             "peer_request_open": self._state.get("peer_request_open", False),
+            "_resend_tried": self._state.get("_resend_tried", False),
         })
 
     def load_state(self) -> None:
@@ -102,6 +104,7 @@ class BotRuntime:
         self._state["awaiting"] = st.get("awaiting") or {}
         self._state["pending_targets"] = st.get("pending_targets") or {}
         self._state["peer_request_open"] = bool(st.get("peer_request_open", False))
+        self._state["_resend_tried"] = bool(st.get("_resend_tried", False))
 
 
 # ===========================================================================
@@ -231,6 +234,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         state["step"] = "phone"
         state["phone"] = None
         state["hash"] = None
+        state["_resend_tried"] = False
         persist()
         await event.respond("📱 Send your phone number with country code (e.g. +989121234567).")
 
@@ -251,6 +255,7 @@ def _register_handlers(rt: BotRuntime) -> None:
         state["phone"] = None
         state["hash"] = None
         state["awaiting"] = {}
+        state["_resend_tried"] = False
         rt._qr_needs_2fa = False
         persist()
         await event.respond("Logged out and session deleted.")
@@ -474,23 +479,32 @@ def _register_handlers(rt: BotRuntime) -> None:
                 phone_code_hash = sent.phone_code_hash
                 log_bot.info(
                     f"send_code_request OK for {phone} "
-                    f"(type={type(sent).__name__}, hash={phone_code_hash[:8]}…)"
+                    f"(type={type(sent).__name__})"
                 )
 
-                # Step 2: try ResendCodeRequest to force SMS routing.
-                # Non-fatal — if it fails, we still have the app code.
-                try:
-                    sms_result = await rt.user_client(functions.auth.ResendCodeRequest(
-                        phone_number=phone,
-                        phone_code_hash=phone_code_hash,
-                    ))
-                    phone_code_hash = sms_result.phone_code_hash
-                    log_bot.info(f"ResendCodeRequest OK for {phone}")
-                except Exception as resend_err:
-                    log_bot.warning(
-                        f"ResendCodeRequest failed (non-fatal): "
-                        f"{type(resend_err).__name__}: {resend_err}"
-                    )
+                # Step 2: try ResendCodeRequest ONCE per session only.
+                # If SendCodeUnavailableError, we just stop and use app code.
+                if not state.get("_resend_tried"):
+                    state["_resend_tried"] = True
+                    try:
+                        sms_result = await rt.user_client(functions.auth.ResendCodeRequest(
+                            phone_number=phone,
+                            phone_code_hash=phone_code_hash,
+                        ))
+                        phone_code_hash = sms_result.phone_code_hash
+                        log_bot.info(f"ResendCodeRequest OK for {phone}")
+                    except Exception as resend_err:
+                        err_name = type(resend_err).__name__
+                        if "SendCodeUnavailable" in err_name:
+                            log_bot.info(
+                                f"SendCodeUnavailable — all delivery options exhausted, "
+                                f"using app code only"
+                            )
+                        else:
+                            log_bot.warning(
+                                f"ResendCodeRequest failed (non-fatal): "
+                                f"{err_name}: {resend_err}"
+                            )
 
                 state["step"] = "code"
                 state["phone"] = phone
@@ -538,6 +552,7 @@ def _register_handlers(rt: BotRuntime) -> None:
                 state["step"] = "idle"
                 state["phone"] = None
                 state["hash"] = None
+                state["_resend_tried"] = False
                 persist()
                 await event.respond("Code expired. Use /login again.")
                 return
@@ -639,6 +654,7 @@ async def _finish_login(rt: BotRuntime, event, state: dict, persist) -> None:
     state["step"] = "idle"
     state["phone"] = None
     state["hash"] = None
+    state["_resend_tried"] = False
     persist()
     try:
         me = await rt.user_client.get_me()
@@ -671,6 +687,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
             except Exception:
                 pass
 
+    # navigation
     if data == "nav:main":
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
     if data == "nav:status":
@@ -688,6 +705,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "nav:help":
         await edit(P.help_text(), P.help_buttons()); return
 
+    # clock on/off
     if data == "clock:on":
         if not rt.user_client:
             await _safe_answer(event, "No user session.", alert=True); return
@@ -701,6 +719,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await CLK.stop_clock(rt.user_client)
         await edit(P.main_panel_text(), P.main_panel_buttons()); return
 
+    # settings
     if data == "set:interval":
         rt.awaiting["interval"] = True; rt.save_state()
         await edit("Send interval (1–60):", [[Button.inline(P.t("btn_back"), b"nav:settings")]]); return
@@ -715,6 +734,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         save_config(CONFIG)
         await edit(P.language_text(), P.language_buttons()); return
 
+    # appearance
     if data == "app:base":
         rt.awaiting["base_name"] = True; rt.save_state()
         await edit("Send new base name:", [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
@@ -745,6 +765,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         await edit("Send 10 characters for 0–9:",
                    [[Button.inline(P.t("btn_back"), b"nav:appearance")]]); return
 
+    # jobs
     if data == "job:new":
         await edit("Use `.rep <seconds> <minutes> <text>` in this DM.",
                    [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
@@ -765,6 +786,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         tpl = J.load_template(rt.owner_id, name) or ""
         await edit(f"**{name}**\n\n{tpl}", [[Button.inline(P.t("btn_back"), b"nav:jobs")]]); return
 
+    # account
     if data == "acc:reqdiamonds":
         rt.awaiting["reqdiamonds"] = True; rt.save_state()
         await edit("Send the amount of diamonds (1–10000):",
@@ -795,9 +817,11 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         U.set_notify(rt.owner_id, key, new_val)
         await edit(P.notify_text(), P.notify_buttons()); return
 
+    # QR login
     if data == "acc:qrlogin":
         await _handle_qr_login(rt, event); return
 
+    # memory
     if data == "mem:view":
         from .store import memory_store
         txt = "```\n" + (str(memory_store.all())[:3500]) + "\n```"
@@ -812,6 +836,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
         state["hash"] = None
         state["awaiting"] = {}
         state["pending_targets"] = {}
+        state["_resend_tried"] = False
         rt.save_state()
         await edit("State cleared.", [[Button.inline(P.t("btn_back"), b"nav:memory")]]); return
     if data == "mem:dump":
@@ -822,7 +847,7 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
 
 
 # ===========================================================================
-# QR login (uses only client.qr_login())
+# QR login
 # ===========================================================================
 async def _handle_qr_login(rt: BotRuntime, event) -> None:
     bot = rt.bot_client
