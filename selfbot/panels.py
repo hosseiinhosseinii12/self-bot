@@ -1,7 +1,11 @@
 """Inline keyboard panels for the Telegram bot (English + Persian).
 
-Button styles: success=green, danger=red, primary=blue.
-Back buttons have no style (transparent/default).
+Two panels:
+  * Owner panel: full control (clock, jobs, settings, memory, ...)
+  * User panel:  for regular users (web panel, account, requests, referral)
+
+Button styles are minimal — most buttons stay default to match the
+clean monochrome admin theme.
 """
 import random
 from typing import List, Optional
@@ -18,7 +22,7 @@ except ImportError:
 
 
 # ===========================================================================
-# Main panel
+# Owner: Main panel
 # ===========================================================================
 def main_panel_buttons() -> List[List]:
     return [
@@ -69,7 +73,7 @@ def main_panel_text() -> str:
 
 
 # ===========================================================================
-# Status
+# Owner: Status
 # ===========================================================================
 def status_buttons() -> List[List]:
     return [[Button.inline(t("btn_back"), b"nav:main")]]
@@ -91,7 +95,7 @@ def status_text() -> str:
 
 
 # ===========================================================================
-# Settings
+# Owner: Settings
 # ===========================================================================
 def settings_buttons() -> List[List]:
     return [
@@ -112,7 +116,7 @@ def settings_text() -> str:
 
 
 # ===========================================================================
-# Appearance
+# Owner: Appearance
 # ===========================================================================
 def appearance_buttons() -> List[List]:
     return [
@@ -137,7 +141,7 @@ def appearance_text() -> str:
 
 
 # ===========================================================================
-# Jobs list
+# Owner: Jobs list
 # ===========================================================================
 def jobs_buttons() -> List[List]:
     from .jobs import active_count
@@ -181,7 +185,7 @@ def jobs_text() -> str:
 
 
 # ===========================================================================
-# Job creation — graphical step-by-step
+# Owner: Job creation flow
 # ===========================================================================
 def job_setup_buttons() -> List[List]:
     return [
@@ -310,14 +314,9 @@ def job_confirm_text(job: dict) -> str:
 
 
 # ===========================================================================
-# Target group selection — Reply Keyboard
+# Owner: Target group selection
 # ===========================================================================
 def group_selection_reply_buttons():
-    """Return Reply Keyboard with request_peer button.
-
-    NOTE: This is a Reply Keyboard, not inline. It's the ONLY way
-    Telegram allows peer selection from a bot.
-    """
     try:
         from telethon.tl.types import (
             KeyboardButtonRequestPeer,
@@ -356,7 +355,7 @@ def group_selection_text() -> str:
 
 
 # ===========================================================================
-# Account
+# Owner: Account
 # ===========================================================================
 def account_buttons() -> List[List]:
     return [
@@ -389,7 +388,7 @@ def account_text() -> str:
 
 
 # ===========================================================================
-# Memory
+# Owner: Memory
 # ===========================================================================
 def memory_buttons() -> List[List]:
     return [
@@ -413,7 +412,7 @@ def memory_text() -> str:
 
 
 # ===========================================================================
-# Help
+# Owner: Help
 # ===========================================================================
 def help_buttons() -> List[List]:
     return [[Button.inline(t("btn_back"), b"nav:main")]]
@@ -449,7 +448,7 @@ def help_text() -> str:
 
 
 # ===========================================================================
-# Language picker
+# Owner: Language picker
 # ===========================================================================
 def language_buttons() -> List[List]:
     return [
@@ -467,7 +466,7 @@ def language_text() -> str:
 
 
 # ===========================================================================
-# Notification preferences
+# Owner: Notification preferences
 # ===========================================================================
 def notify_buttons() -> List[List]:
     owner = int(CONFIG.get("owner_id", 338266658))
@@ -493,7 +492,7 @@ def notify_text() -> str:
 
 
 # ===========================================================================
-# Plan picker
+# Owner: Plan picker
 # ===========================================================================
 def plan_buttons() -> List[List]:
     return [
@@ -508,4 +507,93 @@ def plan_text() -> str:
     return (
         f"**{t('request_subscription')}**\n\n"
         "Pick a plan. An admin will review your request."
+    )
+
+
+# ===========================================================================
+# USER (non-owner) panel
+# ===========================================================================
+def user_panel_buttons(user_id: int) -> List[List]:
+    """Clean, minimal user panel. No loud colors — all default style."""
+    return [
+        [Button.inline("🌐 My Web Panel", b"user:webpanel")],
+        [Button.inline("💎 My Account", b"user:account"),
+         Button.inline("📋 Help", b"user:help")],
+        [Button.inline("💎 Request diamonds", b"user:reqdiamonds"),
+         Button.inline("⭐ Request subscription", b"user:reqsub")],
+        [Button.inline("🤝 My referral", b"user:referral"),
+         Button.inline("📜 My requests", b"user:myreq")],
+    ]
+
+
+def user_panel_text(user_id: int) -> str:
+    from .economy import get_balance
+    from .users import get_user
+
+    u = get_user(user_id) or {}
+    plan = effective_plan(user_id)
+    days = days_left(user_id)
+    bal = get_balance(user_id)
+    name = u.get("first_name") or "there"
+
+    return (
+        f"👋 **Hello {name}!**\n\n"
+        f"Welcome to **SELF BOT** — a Telegram profile clock service.\n\n"
+        f"💎 **Your balance:** {bal} diamonds\n"
+        f"📅 **Your plan:** {plan}\n"
+        f"⏳ **Days left:** {days}\n\n"
+        f"Use the buttons below to manage your account."
+    )
+
+
+def user_account_buttons() -> List[List]:
+    return [
+        [Button.inline("💎 Request diamonds", b"user:reqdiamonds")],
+        [Button.inline("⭐ Request subscription", b"user:reqsub")],
+        [Button.inline("📜 My requests", b"user:myreq")],
+        [Button.inline("◀️ Back", b"user:home")],
+    ]
+
+
+def user_account_text(user_id: int) -> str:
+    from .economy import get_balance
+    from .users import get_user
+
+    u = get_user(user_id) or {}
+    plan = effective_plan(user_id)
+    days = days_left(user_id)
+    bal = get_balance(user_id)
+    referral_code = u.get("referral_code", "—")
+
+    return (
+        f"**👤 My Account**\n\n"
+        f"🆔 ID: `{user_id}`\n"
+        f"💎 Diamonds: **{bal}**\n"
+        f"📅 Plan: **{plan}**\n"
+        f"⏳ Days left: **{days}**\n"
+        f"🤝 Referral code: `{referral_code}`\n\n"
+        f"Use the buttons below to submit a request."
+    )
+
+
+def user_help_buttons() -> List[List]:
+    return [[Button.inline("◀️ Back", b"user:home")]]
+
+
+def user_help_text() -> str:
+    return (
+        "**📋 Help**\n\n"
+        "This bot updates your Telegram profile name with the current time.\n\n"
+        "**Available actions:**\n"
+        "• 🌐 My Web Panel — open your account on the web\n"
+        "• 💎 Request diamonds — ask the admin for diamonds\n"
+        "• ⭐ Request subscription — ask for a paid plan\n"
+        "• 📜 My requests — see your request history\n"
+        "• 🤝 My referral — share your referral code\n\n"
+        "**Plans:**\n"
+        "• Free — 1 job, min interval 300s\n"
+        "• Basic — 3 jobs, min interval 120s\n"
+        "• Pro — 10 jobs, min interval 60s\n"
+        "• VIP — 50 jobs, min interval 30s\n\n"
+        "For more info, contact the admin."
     )

@@ -1,4 +1,4 @@
-"""Flask admin panel — modern dark glassmorphism theme."""
+"""Flask admin panel — clean monochrome design."""
 import functools
 import io
 import json
@@ -10,7 +10,7 @@ import zipfile
 from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 
-from flask import (Blueprint, Flask, abort, flash, jsonify, redirect,
+from flask import (Flask, abort, flash, jsonify, redirect,
                    render_template_string, request, send_file, session,
                    url_for)
 
@@ -102,341 +102,420 @@ def _csrf_check() -> None:
 
 
 # ===========================================================================
-# HTML — Base layout + CSS
+# Base layout
 # ===========================================================================
 BASE_TEMPLATE = """
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>{{ title }} · SELF BOT Admin</title>
+<title>{{ title }} · Admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 :root {
-  --bg-0: #070912;
-  --bg-1: #0c101e;
-  --bg-2: #121828;
-  --bg-3: #1a2135;
-  --stroke: rgba(255,255,255,.07);
-  --stroke-strong: rgba(255,255,255,.14);
-  --text: #eef2ff;
-  --text-dim: #8b96b8;
-  --text-mute: #5a6486;
-  --indigo: #6366f1;
-  --violet: #a855f7;
-  --cyan: #22d3ee;
-  --emerald: #10b981;
-  --amber: #f59e0b;
-  --rose: #f43f5e;
-  --grad: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
-  --grad-soft: linear-gradient(135deg, rgba(99,102,241,.15) 0%, rgba(168,85,247,.08) 100%);
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --text: #0a0a0a;
+  --text-2: #525252;
+  --text-3: #a3a3a3;
+  --border: #e5e5e5;
+  --border-2: #d4d4d4;
+  --hover: #f5f5f5;
+  --active: #f0f0f0;
+  --black: #0a0a0a;
+  --white: #ffffff;
+  --accent: #171717;
+  --green: #16a34a;
+  --red: #dc2626;
+  --amber: #d97706;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+html { -webkit-text-size-adjust: 100%; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  background: var(--bg-0);
+  background: var(--bg);
   color: var(--text);
-  line-height: 1.55;
-  font-feature-settings: "cv11", "ss01";
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  min-height: 100vh;
-  background-image:
-    radial-gradient(1200px 800px at 10% -10%, rgba(99,102,241,.18), transparent 60%),
-    radial-gradient(1000px 700px at 100% 0%, rgba(168,85,247,.12), transparent 55%),
-    radial-gradient(900px 600px at 50% 100%, rgba(34,211,238,.06), transparent 60%);
-  background-attachment: fixed;
+  font-feature-settings: 'cv11', 'ss01';
 }
-a { color: var(--indigo); text-decoration: none; transition: color .15s; }
-a:hover { color: var(--cyan); }
+a { color: var(--text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button { font-family: inherit; }
 
 /* ---------- Layout ---------- */
-.layout { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
-@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .side { display: none; } }
+.layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { display: none !important; }
+}
 
 /* ---------- Sidebar ---------- */
-.side {
-  background: rgba(12,16,30,.72);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-right: 1px solid var(--stroke);
+.sidebar {
+  background: var(--black);
+  color: var(--white);
+  display: flex;
+  flex-direction: column;
   padding: 24px 16px;
-  position: sticky; top: 0; height: 100vh;
-  display: flex; flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
 }
 .brand {
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px 24px;
-  font-weight: 800; font-size: 18px;
+  padding: 0 8px 24px;
+  font-weight: 800; font-size: 15px;
   letter-spacing: -.02em;
 }
 .brand-mark {
-  width: 34px; height: 34px; border-radius: 10px;
-  background: var(--grad);
+  width: 28px; height: 28px;
+  background: var(--white);
+  color: var(--black);
+  border-radius: 8px;
   display: grid; place-items: center;
-  font-size: 16px;
-  box-shadow: 0 8px 24px rgba(99,102,241,.4);
+  font-size: 15px; font-weight: 800;
 }
-.brand-text {
-  background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
+.nav-group {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  font-weight: 700;
+  color: #737373;
+  padding: 18px 8px 8px;
 }
-.nav-section { color: var(--text-mute); font-size: 10.5px; text-transform: uppercase;
-  letter-spacing: .14em; padding: 18px 12px 8px; font-weight: 700; }
-.nav-item {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 12px; border-radius: 10px;
-  color: var(--text-dim); font-size: 13.5px; font-weight: 500;
-  transition: all .15s;
-}
-.nav-item:hover { background: rgba(255,255,255,.04); color: var(--text); }
-.nav-item.active {
-  background: var(--grad-soft);
-  color: var(--text);
-  border: 1px solid rgba(99,102,241,.25);
-}
-.nav-item .ico { width: 18px; text-align: center; font-size: 14px; }
-.side-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--stroke); }
-.user-chip {
+.nav-link {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px; border-radius: 10px;
-  background: rgba(255,255,255,.03);
-  font-size: 12px; color: var(--text-dim);
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: #d4d4d4;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background .12s, color .12s;
 }
+.nav-link:hover {
+  background: #1a1a1a; color: var(--white);
+  text-decoration: none;
+}
+.nav-link.active {
+  background: #262626;
+  color: var(--white);
+  font-weight: 600;
+}
+.nav-link .dot {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: currentColor; opacity: .5;
+}
+.sidebar-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid #262626; }
 
 /* ---------- Main ---------- */
-.main { padding: 32px 40px 60px; max-width: 1440px; }
-.page-head { display: flex; align-items: flex-end; justify-content: space-between;
-  margin-bottom: 28px; gap: 20px; flex-wrap: wrap; }
-.page-title { font-size: 26px; font-weight: 800; letter-spacing: -.03em; }
-.page-sub { color: var(--text-dim); font-size: 14px; margin-top: 4px; }
-.crumb { color: var(--text-mute); font-size: 12px; text-transform: uppercase;
-  letter-spacing: .12em; font-weight: 700; margin-bottom: 6px; }
-
-/* ---------- Cards / stats ---------- */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px; margin-bottom: 24px; }
-.stat {
-  position: relative; overflow: hidden;
-  background: linear-gradient(180deg, rgba(18,24,40,.85), rgba(12,16,30,.85));
-  border: 1px solid var(--stroke);
-  border-radius: 16px;
-  padding: 20px;
-  transition: transform .2s, border-color .2s;
+.main {
+  padding: 40px 48px 60px;
+  max-width: 1400px;
+  width: 100%;
 }
-.stat:hover { transform: translateY(-2px); border-color: var(--stroke-strong); }
-.stat::before {
-  content: ''; position: absolute; inset: 0;
-  background: radial-gradient(400px 100px at 100% 0%, rgba(99,102,241,.14), transparent 60%);
-  pointer-events: none;
+.page-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 20px; margin-bottom: 32px; flex-wrap: wrap;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
 }
-.stat .k { display: flex; align-items: center; gap: 8px;
-  color: var(--text-dim); font-size: 11.5px; font-weight: 600;
-  letter-spacing: .08em; text-transform: uppercase; }
-.stat .v { font-size: 30px; font-weight: 800; margin-top: 12px;
-  letter-spacing: -.03em; }
-.stat.indigo .v { color: #c7d2fe; }
-.stat.violet .v { color: #e9d5ff; }
-.stat.emerald .v { color: #a7f3d0; }
-.stat.amber .v { color: #fde68a; }
-.stat.rose .v { color: #fecdd3; }
-.stat .v .unit { font-size: 14px; color: var(--text-mute); font-weight: 600; margin-left: 4px; }
-
-.card {
-  background: rgba(18,24,40,.65);
-  border: 1px solid var(--stroke);
-  border-radius: 18px;
-  padding: 22px;
-  backdrop-filter: blur(12px);
-  margin-bottom: 20px;
+.page-title {
+  font-size: 28px; font-weight: 800;
+  letter-spacing: -.035em;
+  color: var(--text);
 }
-.card-head { display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
-.card h2 { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
-.card h2 .sub { color: var(--text-mute); font-weight: 500; font-size: 12.5px; margin-left: 8px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
-@media (max-width: 1000px) { .grid-2 { grid-template-columns: 1fr; } }
-
-/* ---------- Tables ---------- */
-.table-wrap { overflow-x: auto; border-radius: 14px; border: 1px solid var(--stroke); }
-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-thead th {
-  background: rgba(255,255,255,.025);
-  color: var(--text-mute); text-align: left;
-  font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
-  font-weight: 700; padding: 12px 16px;
-  border-bottom: 1px solid var(--stroke);
+.page-sub {
+  color: var(--text-2); font-size: 13.5px; margin-top: 4px;
 }
-tbody td { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.03); }
-tbody tr:last-child td { border-bottom: none; }
-tbody tr:hover { background: rgba(99,102,241,.04); }
-.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; }
-.muted { color: var(--text-dim); font-size: 13px; }
-.tiny { font-size: 11.5px; }
-
-/* ---------- Badges ---------- */
-.badge {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 10px; border-radius: 999px;
-  font-size: 11px; font-weight: 700; letter-spacing: .03em;
-  border: 1px solid transparent;
+.crumb {
+  font-size: 11px; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase;
+  color: var(--text-3); margin-bottom: 6px;
 }
-.badge.ok      { background: rgba(16,185,129,.12); color: #6ee7b7; border-color: rgba(16,185,129,.25); }
-.badge.pending { background: rgba(245,158,11,.12); color: #fcd34d; border-color: rgba(245,158,11,.25); }
-.badge.bad     { background: rgba(244,63,94,.12); color: #fda4af; border-color: rgba(244,63,94,.25); }
-.badge.info    { background: rgba(99,102,241,.12); color: #a5b4fc; border-color: rgba(99,102,241,.25); }
-.badge.vip     { background: rgba(168,85,247,.14); color: #d8b4fe; border-color: rgba(168,85,247,.3); }
-.badge.free    { background: rgba(148,163,184,.1); color: #cbd5e1; border-color: rgba(148,163,184,.2); }
 
 /* ---------- Buttons ---------- */
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
   gap: 6px;
-  padding: 9px 16px; border-radius: 10px;
-  border: 1px solid var(--stroke-strong);
-  background: rgba(255,255,255,.04);
-  color: var(--text); font-size: 13px; font-weight: 600;
-  cursor: pointer; transition: all .15s;
-  font-family: inherit;
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-2);
+  background: var(--white);
+  color: var(--text);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: all .12s;
+  text-decoration: none;
+  line-height: 1.2;
 }
-.btn:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.25); }
-.btn.primary {
-  background: var(--grad); border-color: transparent;
-  box-shadow: 0 8px 24px rgba(99,102,241,.35);
+.btn:hover { background: var(--hover); text-decoration: none; }
+.btn-dark {
+  background: var(--black); color: var(--white);
+  border-color: var(--black);
 }
-.btn.primary:hover { box-shadow: 0 10px 30px rgba(99,102,241,.5); transform: translateY(-1px); }
-.btn.success { background: linear-gradient(135deg, #10b981, #059669); border-color: transparent; }
-.btn.danger  { background: linear-gradient(135deg, #f43f5e, #dc2626); border-color: transparent; }
-.btn.ghost   { background: transparent; }
-.btn.sm      { padding: 6px 12px; font-size: 12px; }
-.btn.icon    { width: 32px; height: 32px; padding: 0; border-radius: 8px; }
+.btn-dark:hover { background: #262626; }
+.btn-danger { background: var(--red); color: var(--white); border-color: var(--red); }
+.btn-danger:hover { background: #b91c1c; }
+.btn-success { background: var(--green); color: var(--white); border-color: var(--green); }
+.btn-success:hover { background: #15803d; }
+.btn-sm { padding: 5px 10px; font-size: 12px; border-radius: 6px; }
+.btn-ghost { background: transparent; border-color: transparent; }
+.btn-ghost:hover { background: var(--hover); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
 
-/* ---------- Inputs ---------- */
+/* ---------- Forms ---------- */
+label {
+  display: block; font-size: 12px; font-weight: 600;
+  color: var(--text-2); margin: 14px 0 6px;
+}
 input, select, textarea {
   width: 100%;
-  background: rgba(255,255,255,.03);
-  border: 1px solid var(--stroke);
-  border-radius: 10px;
-  padding: 10px 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--white);
   color: var(--text);
   font-size: 13.5px;
   font-family: inherit;
-  transition: border-color .15s, background .15s;
+  transition: border-color .15s, box-shadow .15s;
 }
 input:focus, select:focus, textarea:focus {
-  outline: none; border-color: rgba(99,102,241,.6);
-  background: rgba(99,102,241,.05);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.12);
+  outline: none;
+  border-color: var(--text);
+  box-shadow: 0 0 0 3px rgba(10,10,10,.06);
 }
-label { display: block; font-size: 12px; color: var(--text-dim);
-  margin: 12px 0 6px; font-weight: 600; letter-spacing: .02em; }
-.field-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+textarea { resize: vertical; }
+.field-row {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;
+}
 .field-row > * { flex: 1; min-width: 140px; }
+
+/* ---------- Cards ---------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.card h2 {
+  font-size: 15px; font-weight: 700;
+  letter-spacing: -.01em;
+  margin-bottom: 16px;
+  color: var(--text);
+}
+.card h2 .sub {
+  font-size: 12.5px; color: var(--text-3);
+  font-weight: 500; margin-left: 8px;
+}
+
+/* ---------- Stats ---------- */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.stat .k {
+  font-size: 11px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-3);
+}
+.stat .v {
+  font-size: 28px; font-weight: 800;
+  letter-spacing: -.03em;
+  margin-top: 8px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.stat .v small { font-size: 14px; color: var(--text-3); font-weight: 500; margin-left: 4px; }
+
+/* ---------- Tables ---------- */
+.table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  background: #fafafa;
+  color: var(--text-2);
+  font-size: 11px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+  text-align: left;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+  color: var(--text);
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--hover); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--text-2); }
+
+/* ---------- Badges ---------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: .02em;
+  border: 1px solid var(--border-2);
+  background: var(--white);
+  color: var(--text);
+}
+.badge.solid { background: var(--black); color: var(--white); border-color: var(--black); }
+.badge.green { background: #f0fdf4; color: var(--green); border-color: #bbf7d0; }
+.badge.red { background: #fef2f2; color: var(--red); border-color: #fecaca; }
+.badge.amber { background: #fffbeb; color: var(--amber); border-color: #fde68a; }
 
 /* ---------- Flash ---------- */
 .flash {
-  padding: 12px 18px; border-radius: 12px; margin-bottom: 18px;
+  padding: 12px 16px; border-radius: 10px;
   font-size: 13.5px; font-weight: 500;
-  background: rgba(16,185,129,.1);
-  border: 1px solid rgba(16,185,129,.3);
-  color: #a7f3d0;
-  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 20px;
+  background: #f0fdf4; color: #166534;
+  border: 1px solid #bbf7d0;
+  display: flex; align-items: center; gap: 8px;
 }
-.flash.err { background: rgba(244,63,94,.1); border-color: rgba(244,63,94,.3); color: #fda4af; }
+.flash.err { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+
+/* ---------- Chart ---------- */
+.chart-box { height: 240px; position: relative; }
+.grid-2 {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 20px; margin-bottom: 20px;
+}
+@media (max-width: 1000px) { .grid-2 { grid-template-columns: 1fr; } }
 
 /* ---------- Login ---------- */
 .login-page {
-  min-height: 100vh; display: grid; place-items: center; padding: 40px 20px;
+  min-height: 100vh;
+  display: grid; place-items: center;
+  padding: 40px 20px;
+  background: var(--bg);
 }
 .login-card {
-  width: 100%; max-width: 400px;
-  padding: 40px 36px;
-  background: rgba(18,24,40,.7);
-  backdrop-filter: blur(24px);
-  border: 1px solid var(--stroke);
-  border-radius: 24px;
-  box-shadow: 0 40px 80px rgba(0,0,0,.5);
+  width: 100%; max-width: 380px;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 32px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 8px 24px rgba(0,0,0,.04);
 }
-.login-logo {
-  width: 56px; height: 56px; margin: 0 auto 24px;
-  border-radius: 16px; background: var(--grad);
+.login-mark {
+  width: 48px; height: 48px;
+  background: var(--black); color: var(--white);
+  border-radius: 12px;
   display: grid; place-items: center;
-  font-size: 26px;
-  box-shadow: 0 16px 40px rgba(99,102,241,.45);
+  font-size: 22px; font-weight: 800;
+  margin: 0 auto 20px;
 }
-.login-card h1 { font-size: 22px; text-align: center; margin-bottom: 6px;
-  letter-spacing: -.02em; }
-.login-card p.sub { text-align: center; color: var(--text-dim);
-  font-size: 13.5px; margin-bottom: 28px; }
+.login-card h1 {
+  font-size: 20px; font-weight: 800;
+  text-align: center;
+  letter-spacing: -.02em;
+  color: var(--text);
+}
+.login-card .sub {
+  text-align: center;
+  color: var(--text-2);
+  font-size: 13.5px;
+  margin: 4px 0 24px;
+}
 
-/* ---------- Charts ---------- */
-.chart-box { height: 220px; position: relative; }
-
-/* ---------- Misc ---------- */
-.empty { text-align: center; padding: 40px 20px; color: var(--text-mute); font-size: 13.5px; }
+/* ---------- Empty ---------- */
+.empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+.mt-2 { margin-top: 8px; }
 .mt-3 { margin-top: 16px; }
 .mt-4 { margin-top: 24px; }
-.flex { display: flex; align-items: center; gap: 10px; }
-.flex-wrap { flex-wrap: wrap; }
-.spacer { flex: 1; }
-code { font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
-  background: rgba(255,255,255,.05); padding: 2px 8px; border-radius: 6px; }
+
+code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: var(--text);
+}
 </style>
 </head>
 <body>
 
 {% if session.get('admin') %}
 <div class="layout">
-  <!-- Sidebar -->
-  <aside class="side">
+  <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">◆</div>
-      <div class="brand-text">SELF BOT</div>
+      <div class="brand-mark">S</div>
+      <span>SELF BOT</span>
     </div>
-    <div class="nav-section">Main</div>
-    <a href="{{ url_for('dashboard') }}" class="nav-item {{ 'active' if page=='dashboard' else '' }}">
-      <span class="ico">▦</span> Dashboard
+
+    <div class="nav-group">Overview</div>
+    <a href="{{ url_for('dashboard') }}" class="nav-link {{ 'active' if page=='dashboard' else '' }}">
+      <span class="dot"></span> Dashboard
     </a>
-    <a href="{{ url_for('users_page') }}" class="nav-item {{ 'active' if page=='users' else '' }}">
-      <span class="ico">◉</span> Users
+    <a href="{{ url_for('users_page') }}" class="nav-link {{ 'active' if page=='users' else '' }}">
+      <span class="dot"></span> Users
     </a>
-    <a href="{{ url_for('requests_page') }}" class="nav-item {{ 'active' if page=='requests' else '' }}">
-      <span class="ico">✉</span> Requests
+    <a href="{{ url_for('requests_page') }}" class="nav-link {{ 'active' if page=='requests' else '' }}">
+      <span class="dot"></span> Requests
     </a>
-    <a href="{{ url_for('transactions_page') }}" class="nav-item {{ 'active' if page=='tx' else '' }}">
-      <span class="ico">⇄</span> Transactions
+    <a href="{{ url_for('transactions_page') }}" class="nav-link {{ 'active' if page=='tx' else '' }}">
+      <span class="dot"></span> Transactions
     </a>
-    <div class="nav-section">System</div>
-    <a href="{{ url_for('shop_page') }}" class="nav-item {{ 'active' if page=='shop' else '' }}">
-      <span class="ico">◈</span> Shop
+
+    <div class="nav-group">System</div>
+    <a href="{{ url_for('shop_page') }}" class="nav-link {{ 'active' if page=='shop' else '' }}">
+      <span class="dot"></span> Shop
     </a>
-    <a href="{{ url_for('proxy_page') }}" class="nav-item {{ 'active' if page=='proxy' else '' }}">
-      <span class="ico">⇆</span> Proxy
+    <a href="{{ url_for('proxy_page') }}" class="nav-link {{ 'active' if page=='proxy' else '' }}">
+      <span class="dot"></span> Proxy
     </a>
-    <a href="{{ url_for('audit_page') }}" class="nav-item {{ 'active' if page=='audit' else '' }}">
-      <span class="ico">◷</span> Audit
+    <a href="{{ url_for('audit_page') }}" class="nav-link {{ 'active' if page=='audit' else '' }}">
+      <span class="dot"></span> Audit
     </a>
-    <a href="{{ url_for('backups_page') }}" class="nav-item {{ 'active' if page=='backups' else '' }}">
-      <span class="ico">◱</span> Backups
+    <a href="{{ url_for('backups_page') }}" class="nav-link {{ 'active' if page=='backups' else '' }}">
+      <span class="dot"></span> Backups
     </a>
-    <a href="{{ url_for('broadcast_page') }}" class="nav-item {{ 'active' if page=='broadcast' else '' }}">
-      <span class="ico">◬</span> Broadcast
+    <a href="{{ url_for('broadcast_page') }}" class="nav-link {{ 'active' if page=='broadcast' else '' }}">
+      <span class="dot"></span> Broadcast
     </a>
-    <a href="{{ url_for('settings_page') }}" class="nav-item {{ 'active' if page=='settings' else '' }}">
-      <span class="ico">⚙</span> Settings
+    <a href="{{ url_for('settings_page') }}" class="nav-link {{ 'active' if page=='settings' else '' }}">
+      <span class="dot"></span> Settings
     </a>
-    <div class="side-footer">
-      <a href="{{ url_for('logout') }}" class="nav-item">
-        <span class="ico">⇤</span> Sign out
+
+    <div class="sidebar-footer">
+      <a href="{{ url_for('logout') }}" class="nav-link">
+        <span class="dot"></span> Sign out
       </a>
     </div>
   </aside>
 
-  <!-- Main -->
   <main class="main">
     {% with msgs = get_flashed_messages(with_categories=true) %}
       {% for cat, msg in msgs %}
@@ -455,28 +534,25 @@ code { font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
 """
 
 
-# ===========================================================================
-# Login template
-# ===========================================================================
 LOGIN_TEMPLATE = """
 <div class="login-page">
   <form class="login-card" method="post" action="{{ url_for('login_post') }}">
-    <div class="login-logo">◆</div>
-    <h1>Welcome back</h1>
-    <p class="sub">Sign in to SELF BOT admin</p>
+    <div class="login-mark">S</div>
+    <h1>Admin Sign In</h1>
+    <p class="sub">SELF BOT control panel</p>
 
     <input type="hidden" name="csrf" value="{{ csrf }}">
 
     <label>Password</label>
-    <input type="password" name="password" placeholder="••••••••••••" autofocus required>
+    <input type="password" name="password" placeholder="••••••••••" autofocus required>
 
     {% if totp_enabled %}
     <label>2FA code</label>
-    <input type="text" name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456">
+    <input type="text" name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000">
     {% endif %}
 
-    <div style="height:18px"></div>
-    <button type="submit" class="btn primary" style="width:100%">Sign in →</button>
+    <div style="height:20px"></div>
+    <button type="submit" class="btn btn-dark" style="width:100%">Sign in</button>
   </form>
 </div>
 """
@@ -495,58 +571,50 @@ DASHBOARD_TEMPLATE = """
 </div>
 
 <div class="stats">
-  <div class="stat indigo">
-    <div class="k">◆ Total users</div>
+  <div class="stat">
+    <div class="k">Total users</div>
     <div class="v">{{ users_total }}</div>
   </div>
-  <div class="stat emerald">
-    <div class="k">◉ Active 24h</div>
+  <div class="stat">
+    <div class="k">Active 24h</div>
     <div class="v">{{ users_active }}</div>
   </div>
-  <div class="stat cyan" style="--x:0">
-    <div class="k">✚ New 7 days</div>
+  <div class="stat">
+    <div class="k">New 7 days</div>
     <div class="v">{{ users_new }}</div>
   </div>
-  <div class="stat violet">
-    <div class="k">◆ Diamonds in circulation</div>
+  <div class="stat">
+    <div class="k">Diamonds in circulation</div>
     <div class="v">{{ diamonds }}</div>
   </div>
-  <div class="stat emerald">
-    <div class="k">↑ Granted (all time)</div>
+  <div class="stat">
+    <div class="k">Granted all time</div>
     <div class="v">{{ granted }}</div>
   </div>
-  <div class="stat rose">
-    <div class="k">↓ Spent (all time)</div>
+  <div class="stat">
+    <div class="k">Spent all time</div>
     <div class="v">{{ spent }}</div>
   </div>
 </div>
 
 <div class="grid-2">
   <div class="card">
-    <div class="card-head">
-      <h2>◆ Diamond consumption <span class="sub">last 24h</span></h2>
-    </div>
+    <h2>Diamond consumption <span class="sub">last 24 hours</span></h2>
     <div class="chart-box"><canvas id="diamondChart"></canvas></div>
   </div>
   <div class="card">
-    <div class="card-head">
-      <h2>◆ Subscription distribution</h2>
-    </div>
+    <h2>Subscription distribution</h2>
     <div class="chart-box"><canvas id="subChart"></canvas></div>
   </div>
 </div>
 
 <div class="grid-2">
   <div class="card">
-    <div class="card-head">
-      <h2>◆ Request approval rate <span class="sub">last 14 days</span></h2>
-    </div>
+    <h2>Request approval rate <span class="sub">last 14 days</span></h2>
     <div class="chart-box"><canvas id="approvalChart"></canvas></div>
   </div>
   <div class="card">
-    <div class="card-head">
-      <h2>◆ Top spenders</h2>
-    </div>
+    <h2>Top spenders</h2>
     <div class="table-wrap">
       <table>
         <thead><tr><th>#</th><th>User</th><th style="text-align:right">Spent</th></tr></thead>
@@ -555,7 +623,7 @@ DASHBOARD_TEMPLATE = """
         <tr>
           <td class="mono">{{ loop.index }}</td>
           <td><a href="{{ url_for('user_detail', uid=s.user_id) }}">#{{ s.user_id }}</a></td>
-          <td style="text-align:right"><span class="badge info">{{ s.spent }} ◆</span></td>
+          <td style="text-align:right" class="mono">{{ s.spent }} ◆</td>
         </tr>
         {% else %}
         <tr><td colspan="3" class="empty">No spenders yet</td></tr>
@@ -567,9 +635,10 @@ DASHBOARD_TEMPLATE = """
 </div>
 
 <script>
-Chart.defaults.color = '#8b96b8';
+Chart.defaults.color = '#a3a3a3';
 Chart.defaults.font.family = 'Inter, sans-serif';
 Chart.defaults.font.size = 11;
+Chart.defaults.borderColor = '#e5e5e5';
 
 const diamondData = {{ diamond_series|safe }};
 new Chart(document.getElementById('diamondChart'), {
@@ -579,14 +648,9 @@ new Chart(document.getElementById('diamondChart'), {
     datasets: [{
       label: 'Spent',
       data: diamondData.map(d => d.spent),
-      borderColor: '#818cf8',
-      backgroundColor: (ctx) => {
-        const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 220);
-        g.addColorStop(0, 'rgba(129,140,248,.35)');
-        g.addColorStop(1, 'rgba(129,140,248,0)');
-        return g;
-      },
-      fill: true, tension: .4, pointRadius: 0, pointHoverRadius: 5,
+      borderColor: '#0a0a0a',
+      backgroundColor: 'rgba(10,10,10,.06)',
+      fill: true, tension: .35, pointRadius: 0, pointHoverRadius: 5,
       borderWidth: 2,
     }]
   },
@@ -594,8 +658,8 @@ new Chart(document.getElementById('diamondChart'), {
     responsive: true, maintainAspectRatio: false,
     plugins: { legend: { display: false } },
     scales: {
-      x: { grid: { color: 'rgba(255,255,255,.04)' }, border: { display: false } },
-      y: { grid: { color: 'rgba(255,255,255,.04)' }, border: { display: false }, beginAtZero: true }
+      x: { grid: { display: false }, border: { display: false } },
+      y: { grid: { color: '#f0f0f0' }, border: { display: false }, beginAtZero: true }
     }
   }
 });
@@ -607,17 +671,15 @@ new Chart(document.getElementById('subChart'), {
     labels: Object.keys(subData),
     datasets: [{
       data: Object.values(subData),
-      backgroundColor: ['#64748b','#6366f1','#a855f7','#f59e0b'],
+      backgroundColor: ['#171717', '#525252', '#a3a3a3', '#e5e5e5'],
       borderWidth: 0,
-      hoverOffset: 8,
+      hoverOffset: 6,
     }]
   },
   options: {
     responsive: true, maintainAspectRatio: false,
-    cutout: '70%',
-    plugins: {
-      legend: { position: 'bottom', labels: { padding: 16, boxWidth: 12, boxHeight: 12 } }
-    }
+    cutout: '68%',
+    plugins: { legend: { position: 'bottom', labels: { padding: 14, boxWidth: 10, boxHeight: 10 } } }
   }
 });
 
@@ -628,17 +690,17 @@ new Chart(document.getElementById('approvalChart'), {
     labels: approvalData.map(d => d.date.slice(5)),
     datasets: [
       { label: 'Approved', data: approvalData.map(d => d.approved),
-        backgroundColor: '#10b981', borderRadius: 6, barThickness: 12 },
+        backgroundColor: '#0a0a0a', borderRadius: 4, barThickness: 10 },
       { label: 'Rejected', data: approvalData.map(d => d.rejected),
-        backgroundColor: '#f43f5e', borderRadius: 6, barThickness: 12 },
+        backgroundColor: '#d4d4d4', borderRadius: 4, barThickness: 10 },
     ]
   },
   options: {
     responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { position: 'bottom', labels: { padding: 16, boxWidth: 12, boxHeight: 12 } } },
+    plugins: { legend: { position: 'bottom', labels: { padding: 14, boxWidth: 10, boxHeight: 10 } } },
     scales: {
       x: { stacked: true, grid: { display: false }, border: { display: false } },
-      y: { stacked: true, grid: { color: 'rgba(255,255,255,.04)' }, border: { display: false } }
+      y: { stacked: true, grid: { color: '#f0f0f0' }, border: { display: false } }
     }
   }
 });
@@ -647,7 +709,7 @@ new Chart(document.getElementById('approvalChart'), {
 
 
 # ===========================================================================
-# Users list
+# Users
 # ===========================================================================
 USERS_TEMPLATE = """
 <div class="page-head">
@@ -658,42 +720,37 @@ USERS_TEMPLATE = """
   </div>
 </div>
 
-<div class="card">
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th><th>Name</th><th>Username</th><th>Plan</th>
-          <th>Days</th><th>Diamonds</th><th>Status</th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for u in users %}
+<div class="table-wrap">
+  <table>
+    <thead>
       <tr>
-        <td class="mono">#{{ u.id }}</td>
-        <td>{{ u.first_name or '—' }}</td>
-        <td class="muted">{{ ('@' + u.username) if u.username else '—' }}</td>
-        <td><span class="badge {{ u.plan }}">{{ u.plan }}</span></td>
-        <td class="mono">{{ u.days }}</td>
-        <td><strong>{{ u.diamonds }}</strong> <span class="muted">◆</span></td>
-        <td>{% if u.banned %}<span class="badge bad">banned</span>{% else %}<span class="badge ok">active</span>{% endif %}</td>
-        <td style="text-align:right">
-          <a class="btn sm" href="{{ url_for('user_detail', uid=u.id) }}">Open →</a>
-        </td>
+        <th>ID</th><th>Name</th><th>Username</th><th>Plan</th>
+        <th>Days</th><th>Diamonds</th><th>Status</th><th></th>
       </tr>
-      {% else %}
-      <tr><td colspan="8" class="empty">No users yet.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+    </thead>
+    <tbody>
+    {% for u in users %}
+    <tr>
+      <td class="mono">#{{ u.id }}</td>
+      <td>{{ u.first_name or '—' }}</td>
+      <td class="muted">{{ ('@' + u.username) if u.username else '—' }}</td>
+      <td>{% if u.plan != 'free' %}<span class="badge solid">{{ u.plan }}</span>{% else %}<span class="badge">{{ u.plan }}</span>{% endif %}</td>
+      <td class="mono">{{ u.days }}</td>
+      <td class="mono">{{ u.diamonds }}</td>
+      <td>{% if u.banned %}<span class="badge red">banned</span>{% else %}<span class="badge green">active</span>{% endif %}</td>
+      <td style="text-align:right">
+        <a class="btn btn-sm" href="{{ url_for('user_detail', uid=u.id) }}">Open</a>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="empty">No users yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </div>
 """
 
 
-# ===========================================================================
-# User detail
-# ===========================================================================
 USER_DETAIL_TEMPLATE = """
 <div class="page-head">
   <div>
@@ -701,97 +758,72 @@ USER_DETAIL_TEMPLATE = """
     <div class="page-title">#{{ u.id }}</div>
     <div class="page-sub">{{ u.first_name or 'Unnamed' }} · joined {{ u.created_at[:10] if u.created_at else '—' }}</div>
   </div>
-  <a class="btn ghost" href="{{ url_for('users_page') }}">← Back to users</a>
+  <a class="btn" href="{{ url_for('users_page') }}">← Back</a>
 </div>
 
 <div class="stats">
-  <div class="stat violet">
-    <div class="k">◆ Diamonds</div>
-    <div class="v">{{ u.diamonds }}</div>
-  </div>
-  <div class="stat indigo">
-    <div class="k">◆ Plan</div>
-    <div class="v" style="font-size:22px">{{ u.plan }}</div>
-  </div>
-  <div class="stat emerald">
-    <div class="k">◷ Days left</div>
-    <div class="v">{{ u.days }}</div>
-  </div>
-  <div class="stat amber">
-    <div class="k">◆ Referral code</div>
-    <div class="v mono" style="font-size:16px">{{ u.referral_code }}</div>
-  </div>
+  <div class="stat"><div class="k">Diamonds</div><div class="v">{{ u.diamonds }}</div></div>
+  <div class="stat"><div class="k">Plan</div><div class="v" style="font-size:22px">{{ u.plan }}</div></div>
+  <div class="stat"><div class="k">Days left</div><div class="v">{{ u.days }}</div></div>
+  <div class="stat"><div class="k">Referral code</div><div class="v mono" style="font-size:15px">{{ u.referral_code }}</div></div>
 </div>
 
 <div class="grid-2">
   <div class="card">
-    <div class="card-head"><h2>Grant diamonds</h2></div>
+    <h2>Grant diamonds</h2>
     <form method="post" action="{{ url_for('grant_diamonds', uid=u.id) }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <div class="field-row">
-        <div style="flex:1">
-          <label>Amount (negative to subtract)</label>
-          <input type="number" name="amount" value="10">
-        </div>
-        <div style="flex:1">
-          <label>Reason</label>
-          <input type="text" name="reason" value="admin_grant">
-        </div>
-        <button class="btn primary">Apply</button>
+        <div><label>Amount</label><input type="number" name="amount" value="10"></div>
+        <div><label>Reason</label><input type="text" name="reason" value="admin_grant"></div>
+        <button class="btn btn-dark">Apply</button>
       </div>
     </form>
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Set subscription</h2></div>
+    <h2>Set subscription</h2>
     <form method="post" action="{{ url_for('set_subscription', uid=u.id) }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <div class="field-row">
-        <div style="flex:1">
-          <label>Plan</label>
+        <div><label>Plan</label>
           <select name="plan">
             {% for p in plans %}<option value="{{ p }}" {{ 'selected' if p==u.plan else '' }}>{{ p }}</option>{% endfor %}
           </select>
         </div>
-        <div style="flex:0 0 110px">
-          <label>Days</label>
-          <input type="number" name="days" value="30">
-        </div>
-        <div style="flex:0 0 130px">
-          <label>Auto-renew</label>
+        <div style="flex:0 0 110px"><label>Days</label><input type="number" name="days" value="30"></div>
+        <div style="flex:0 0 130px"><label>Auto-renew</label>
           <select name="auto_renew"><option value="0">No</option><option value="1">Yes</option></select>
         </div>
-        <button class="btn success">Set</button>
+        <button class="btn btn-dark">Set</button>
       </div>
     </form>
-    <div style="margin-top:12px">
+    <div class="mt-2">
       <form method="post" action="{{ url_for('cancel_subscription', uid=u.id) }}" style="display:inline">
         <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="btn ghost sm">Cancel subscription</button>
+        <button class="btn btn-sm">Cancel subscription</button>
       </form>
     </div>
   </div>
 </div>
 
 <div class="card">
-  <div class="card-head">
-    <h2>Moderation</h2>
-  </div>
+  <h2>Moderation</h2>
   <form method="post" action="{{ url_for('toggle_ban', uid=u.id) }}" style="display:inline">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="{{ 'btn success' if u.banned else 'btn danger' }}">
+    <button class="btn {{ 'btn-success' if u.banned else 'btn-danger' }}">
       {{ 'Unban user' if u.banned else 'Ban user' }}
     </button>
   </form>
   <form method="post" action="{{ url_for('delete_user_route', uid=u.id) }}" style="display:inline"
         onsubmit="return confirm('Delete user? This cannot be undone.');">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="btn danger">Delete permanently</button>
+    <button class="btn btn-danger">Delete permanently</button>
   </form>
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Recent transactions</h2></div>
+  <h2>Recent transactions</h2>
   <div class="table-wrap">
     <table>
       <thead><tr><th>When</th><th>Kind</th><th>Amount</th><th>Reason</th><th style="text-align:right">Balance</th></tr></thead>
@@ -799,8 +831,8 @@ USER_DETAIL_TEMPLATE = """
       {% for tx in txs %}
       <tr>
         <td class="mono muted">{{ tx.created_at[:19] }}</td>
-        <td><span class="badge {{ 'bad' if tx.kind=='spend' else 'ok' }}">{{ tx.kind }}</span></td>
-        <td><strong>{{ tx.amount }}</strong></td>
+        <td>{% if tx.kind == 'spend' %}<span class="badge red">{{ tx.kind }}</span>{% else %}<span class="badge green">{{ tx.kind }}</span>{% endif %}</td>
+        <td class="mono">{{ tx.amount }}</td>
         <td class="muted">{{ tx.reason }}</td>
         <td class="mono" style="text-align:right">{{ tx.balance_after }}</td>
       </tr>
@@ -826,40 +858,42 @@ REQUESTS_TEMPLATE = """
   </div>
 </div>
 
-<div class="card">
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>ID</th><th>User</th><th>Type</th><th>Details</th><th>Status</th><th>Created</th><th style="text-align:right">Actions</th></tr>
-      </thead>
-      <tbody>
-      {% for r in requests %}
-      <tr>
-        <td class="mono tiny">{{ r.id }}</td>
-        <td><a href="{{ url_for('user_detail', uid=r.user_id) }}">#{{ r.user_id }}</a></td>
-        <td>{{ r.type }}</td>
-        <td><strong>{{ r.amount or r.plan or '—' }}</strong></td>
-        <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
-        <td class="mono muted tiny">{{ r.created_at[:19] }}</td>
-        <td style="text-align:right">
-          {% if r.status == 'pending' %}
-          <form method="post" action="{{ url_for('approve_request', rid=r.id) }}" style="display:inline">
-            <input type="hidden" name="csrf" value="{{ csrf }}">
-            <button class="btn success sm">✓ Approve</button>
-          </form>
-          <form method="post" action="{{ url_for('reject_request', rid=r.id) }}" style="display:inline">
-            <input type="hidden" name="csrf" value="{{ csrf }}">
-            <button class="btn danger sm">✕</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="7" class="empty">No requests.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>ID</th><th>User</th><th>Type</th><th>Details</th><th>Status</th><th>Created</th><th style="text-align:right">Actions</th></tr>
+    </thead>
+    <tbody>
+    {% for r in requests %}
+    <tr>
+      <td class="mono muted">{{ r.id }}</td>
+      <td><a href="{{ url_for('user_detail', uid=r.user_id) }}">#{{ r.user_id }}</a></td>
+      <td>{{ r.type }}</td>
+      <td><strong>{{ r.amount or r.plan or '—' }}</strong></td>
+      <td>
+        {% if r.status == 'pending' %}<span class="badge amber">pending</span>
+        {% elif r.status == 'approved' %}<span class="badge green">approved</span>
+        {% else %}<span class="badge red">rejected</span>{% endif %}
+      </td>
+      <td class="mono muted">{{ r.created_at[:19] }}</td>
+      <td style="text-align:right">
+        {% if r.status == 'pending' %}
+        <form method="post" action="{{ url_for('approve_request', rid=r.id) }}" style="display:inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn btn-success btn-sm">Approve</button>
+        </form>
+        <form method="post" action="{{ url_for('reject_request', rid=r.id) }}" style="display:inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn btn-danger btn-sm">Reject</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty">No requests.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </div>
 """
 
@@ -872,45 +906,34 @@ TX_TEMPLATE = """
   <div>
     <div class="crumb">Manage</div>
     <div class="page-title">Transactions</div>
-    <div class="page-sub">Full ledger of diamond flow</div>
+    <div class="page-sub">Complete ledger of diamond flow</div>
   </div>
 </div>
 
 <div class="stats">
-  <div class="stat emerald">
-    <div class="k">↑ Granted</div>
-    <div class="v">{{ totals.granted }}</div>
-  </div>
-  <div class="stat rose">
-    <div class="k">↓ Spent</div>
-    <div class="v">{{ totals.spent }}</div>
-  </div>
-  <div class="stat amber">
-    <div class="k">↺ Refunded</div>
-    <div class="v">{{ totals.refunded }}</div>
-  </div>
+  <div class="stat"><div class="k">Granted</div><div class="v">{{ totals.granted }}</div></div>
+  <div class="stat"><div class="k">Spent</div><div class="v">{{ totals.spent }}</div></div>
+  <div class="stat"><div class="k">Refunded</div><div class="v">{{ totals.refunded }}</div></div>
 </div>
 
-<div class="card">
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>When</th><th>User</th><th>Kind</th><th>Amount</th><th>Reason</th><th style="text-align:right">Balance</th></tr></thead>
-      <tbody>
-      {% for tx in txs %}
-      <tr>
-        <td class="mono muted tiny">{{ tx.created_at[:19] }}</td>
-        <td><a href="{{ url_for('user_detail', uid=tx.user_id) }}">#{{ tx.user_id }}</a></td>
-        <td><span class="badge {{ 'bad' if tx.kind=='spend' else 'ok' }}">{{ tx.kind }}</span></td>
-        <td><strong>{{ tx.amount }}</strong></td>
-        <td class="muted">{{ tx.reason }}</td>
-        <td class="mono" style="text-align:right">{{ tx.balance_after }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6" class="empty">No transactions.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>When</th><th>User</th><th>Kind</th><th>Amount</th><th>Reason</th><th style="text-align:right">Balance</th></tr></thead>
+    <tbody>
+    {% for tx in txs %}
+    <tr>
+      <td class="mono muted">{{ tx.created_at[:19] }}</td>
+      <td><a href="{{ url_for('user_detail', uid=tx.user_id) }}">#{{ tx.user_id }}</a></td>
+      <td>{% if tx.kind == 'spend' %}<span class="badge red">{{ tx.kind }}</span>{% else %}<span class="badge green">{{ tx.kind }}</span>{% endif %}</td>
+      <td class="mono">{{ tx.amount }}</td>
+      <td class="muted">{{ tx.reason }}</td>
+      <td class="mono" style="text-align:right">{{ tx.balance_after }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="empty">No transactions.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </div>
 """
 
@@ -922,55 +945,52 @@ SHOP_TEMPLATE = """
 <div class="page-head">
   <div>
     <div class="crumb">System</div>
-    <div class="page-title">Shop items</div>
+    <div class="page-title">Shop</div>
     <div class="page-sub">Items users can buy with diamonds</div>
   </div>
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Add or update item</h2></div>
+  <h2>Add or update item</h2>
   <form method="post" action="{{ url_for('shop_save') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="field-row">
       <div><label>ID</label><input name="item_id" placeholder="extra_job_slot"></div>
       <div><label>Name</label><input name="name" placeholder="Extra job slot"></div>
       <div style="flex:0 0 120px"><label>Price</label><input type="number" name="price" value="20"></div>
-      <div style="flex:0 0 130px"><label>Max per user</label><input type="number" name="max_per_user" value="1"></div>
+      <div style="flex:0 0 140px"><label>Max per user</label><input type="number" name="max_per_user" value="1"></div>
     </div>
     <label>Description</label>
-    <input name="description" placeholder="What does this do?">
-    <div style="margin-top:14px">
-      <button class="btn primary">Save item</button>
+    <input name="description" placeholder="What does this item do?">
+    <div class="mt-3">
+      <button class="btn btn-dark">Save item</button>
     </div>
   </form>
 </div>
 
-<div class="card">
-  <div class="card-head"><h2>Current items <span class="sub">{{ items|length }}</span></h2></div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>ID</th><th>Name</th><th>Price</th><th>Max</th><th>Description</th><th></th></tr></thead>
-      <tbody>
-      {% for iid, it in items.items() %}
-      <tr>
-        <td><code>{{ iid }}</code></td>
-        <td><strong>{{ it.name }}</strong></td>
-        <td><span class="badge info">{{ it.price }} ◆</span></td>
-        <td class="mono">{{ it.max_per_user }}</td>
-        <td class="muted">{{ it.description }}</td>
-        <td style="text-align:right">
-          <form method="post" action="{{ url_for('shop_delete', item_id=iid) }}" style="display:inline">
-            <input type="hidden" name="csrf" value="{{ csrf }}">
-            <button class="btn danger sm">Delete</button>
-          </form>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6" class="empty">No items.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>ID</th><th>Name</th><th>Price</th><th>Max</th><th>Description</th><th></th></tr></thead>
+    <tbody>
+    {% for iid, it in items.items() %}
+    <tr>
+      <td><code>{{ iid }}</code></td>
+      <td><strong>{{ it.name }}</strong></td>
+      <td class="mono">{{ it.price }} ◆</td>
+      <td class="mono">{{ it.max_per_user }}</td>
+      <td class="muted">{{ it.description }}</td>
+      <td style="text-align:right">
+        <form method="post" action="{{ url_for('shop_delete', item_id=iid) }}" style="display:inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn btn-danger btn-sm">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="empty">No items.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </div>
 """
 
@@ -987,25 +1007,23 @@ AUDIT_TEMPLATE = """
   </div>
 </div>
 
-<div class="card">
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Target</th><th>IP</th></tr></thead>
-      <tbody>
-      {% for e in entries %}
-      <tr>
-        <td class="mono muted tiny">{{ e.created_at[:19] }}</td>
-        <td class="mono">#{{ e.admin_id }}</td>
-        <td><span class="badge info">{{ e.action }}</span></td>
-        <td class="muted">{{ e.target or '—' }}</td>
-        <td class="mono muted tiny">{{ e.ip or '—' }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5" class="empty">No audit entries.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Target</th><th>IP</th></tr></thead>
+    <tbody>
+    {% for e in entries %}
+    <tr>
+      <td class="mono muted">{{ e.created_at[:19] }}</td>
+      <td class="mono">#{{ e.admin_id }}</td>
+      <td><span class="badge">{{ e.action }}</span></td>
+      <td class="muted">{{ e.target or '—' }}</td>
+      <td class="mono muted">{{ e.ip or '—' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="empty">No audit entries.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </div>
 """
 
@@ -1024,52 +1042,49 @@ BACKUPS_TEMPLATE = """
 
 <div class="grid-2">
   <div class="card">
-    <div class="card-head"><h2>Create backup</h2></div>
-    <p class="muted" style="margin-bottom:14px">
+    <h2>Create backup</h2>
+    <p class="muted mt-2" style="margin-bottom:16px">
       Zips all JSON data and sends it to the owner's Telegram DM.
     </p>
     <form method="post" action="{{ url_for('backup_now') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button class="btn primary">Create backup now</button>
+      <button class="btn btn-dark">Create backup now</button>
     </form>
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Restore from ZIP</h2></div>
-    <p class="muted" style="margin-bottom:14px">
+    <h2>Restore from ZIP</h2>
+    <p class="muted mt-2" style="margin-bottom:16px">
       Upload a previously created backup archive.
     </p>
     <form method="post" action="{{ url_for('restore_backup') }}" enctype="multipart/form-data">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="file" name="file" accept=".zip">
-      <div style="margin-top:14px">
-        <button class="btn danger">Restore data</button>
+      <div class="mt-3">
+        <button class="btn btn-danger">Restore data</button>
       </div>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <div class="card-head"><h2>Local backups <span class="sub">{{ backups|length }}</span></h2></div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>File</th><th>Size</th><th>Modified</th><th></th></tr></thead>
-      <tbody>
-      {% for b in backups %}
-      <tr>
-        <td class="mono">{{ b.name }}</td>
-        <td class="mono">{{ b.size_kb }} KB</td>
-        <td class="muted tiny">{{ b.modified }}</td>
-        <td style="text-align:right">
-          <a class="btn sm" href="{{ url_for('download_backup', name=b.name) }}">Download</a>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="4" class="empty">No backups yet.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+    <tbody>
+    {% for b in backups %}
+    <tr>
+      <td class="mono">{{ b.name }}</td>
+      <td class="mono">{{ b.size_kb }} KB</td>
+      <td class="muted mono">{{ b.modified }}</td>
+      <td style="text-align:right">
+        <a class="btn btn-sm" href="{{ url_for('download_backup', name=b.name) }}">Download</a>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="empty">No backups yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </div>
 """
 
@@ -1091,8 +1106,8 @@ BROADCAST_TEMPLATE = """
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Message</label>
     <textarea name="message" rows="8" placeholder="Hello everyone..."></textarea>
-    <div style="margin-top:16px">
-      <button class="btn primary">Send to all users →</button>
+    <div class="mt-3">
+      <button class="btn btn-dark">Send to all users</button>
     </div>
   </form>
 </div>
@@ -1112,7 +1127,7 @@ SETTINGS_TEMPLATE = """
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Economy</h2></div>
+  <h2>Economy</h2>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="field-row">
@@ -1121,28 +1136,28 @@ SETTINGS_TEMPLATE = """
       <div><label>Cost per job</label><input type="number" name="diamond_cost_job" value="{{ cfg.diamond_cost_job }}"></div>
       <div><label>Referral bonus</label><input type="number" name="referral_bonus" value="{{ cfg.referral_bonus }}"></div>
     </div>
-    <div class="field-row" style="margin-top:14px">
+    <div class="field-row mt-3">
       <div><label>Timezone</label><input name="timezone" value="{{ cfg.timezone }}"></div>
       <div><label>Base name</label><input name="base_name" value="{{ cfg.base_name }}"></div>
       <div style="flex:0 0 140px"><label>Interval (min)</label><input type="number" name="interval" value="{{ cfg.interval }}"></div>
     </div>
-    <div style="margin-top:18px">
-      <button class="btn primary">Save settings</button>
+    <div class="mt-4">
+      <button class="btn btn-dark">Save settings</button>
     </div>
   </form>
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Security</h2></div>
-  <p class="muted" style="margin-bottom:14px">
+  <h2>Security</h2>
+  <p class="muted mt-2" style="margin-bottom:16px">
     Two-factor authentication protects your admin login with a TOTP code.
   </p>
-  <a class="btn primary" href="{{ url_for('totp_page') }}">Configure 2FA →</a>
+  <a class="btn btn-dark" href="{{ url_for('totp_page') }}">Configure 2FA</a>
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>API access</h2></div>
-  <p class="muted">
+  <h2>API access</h2>
+  <p class="muted mt-2">
     Set the <code>API_TOKEN</code> environment variable to protect <code>/api/*</code> endpoints.
     Pass it as <code>Authorization: Bearer &lt;token&gt;</code>.
   </p>
@@ -1159,30 +1174,30 @@ TOTP_TEMPLATE = """
     <div class="crumb">Security</div>
     <div class="page-title">Two-Factor Authentication</div>
   </div>
-  <a class="btn ghost" href="{{ url_for('settings_page') }}">← Back</a>
+  <a class="btn" href="{{ url_for('settings_page') }}">← Back</a>
 </div>
 
 <div class="card">
   {% if enabled %}
-    <div class="badge ok" style="margin-bottom:14px">2FA enabled</div>
+    <span class="badge green" style="margin-bottom:14px">Enabled</span>
     <p class="muted" style="margin-bottom:16px">
       Your account is protected with TOTP. You will be prompted for a code on every login.
     </p>
     <form method="post" action="{{ url_for('totp_disable') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button class="btn danger">Disable 2FA</button>
+      <button class="btn btn-danger">Disable 2FA</button>
     </form>
   {% else %}
-    <div class="badge pending" style="margin-bottom:14px">2FA disabled</div>
+    <span class="badge amber" style="margin-bottom:14px">Disabled</span>
     {% if qr_b64 %}
       <p class="muted">Scan this QR code with your authenticator app:</p>
       <img src="data:image/png;base64,{{ qr_b64 }}" alt="QR"
-           style="background:#fff;padding:14px;border-radius:14px;margin:16px 0;">
+           style="background:#fff;padding:12px;border-radius:12px;margin:16px 0;border:1px solid var(--border)">
       <p class="muted">Or enter this secret manually:</p>
       <p style="margin:8px 0 20px"><code>{{ pending_secret }}</code></p>
       <form method="post" action="{{ url_for('totp_enable') }}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="btn success">Enable 2FA</button>
+        <button class="btn btn-success">Enable 2FA</button>
       </form>
     {% else %}
       <p class="muted">pyotp or qrcode not installed. Add them to requirements.</p>
@@ -1205,49 +1220,44 @@ PROXY_TEMPLATE = """
 </div>
 
 <div class="card">
-  <div class="card-head">
-    <h2>Active config: <code>{{ active }}</code></h2>
-  </div>
-  <button class="btn primary" id="test-active-btn">Test active config</button>
+  <h2>Active config: <code>{{ active }}</code></h2>
+  <button class="btn btn-dark" id="test-active-btn">Test active config</button>
   <pre id="test-active-result" style="margin-top:14px;white-space:pre-wrap;
-       background:rgba(0,0,0,.35);padding:14px;border-radius:12px;font-size:12px;
-       color:#a5b4fc;display:none;font-family:'JetBrains Mono',monospace;border:1px solid var(--stroke)"></pre>
+       background:#0a0a0a;color:#d4d4d4;padding:14px;border-radius:10px;font-size:12px;
+       display:none;font-family:'JetBrains Mono',monospace;line-height:1.6"></pre>
 </div>
 
-<div class="card">
-  <div class="card-head"><h2>All configs <span class="sub">{{ configs|length }}</span></h2></div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Key</th><th>Name</th><th>URL</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead>
-      <tbody>
-      {% for c in configs %}
-      <tr>
-        <td><code>{{ c.key }}</code></td>
-        <td>{{ c.name }}</td>
-        <td class="mono muted tiny">{{ c.url_short }}</td>
-        <td>{% if c.active %}<span class="badge ok">active</span>{% else %}<span class="badge free">idle</span>{% endif %}</td>
-        <td style="text-align:right">
-          <button class="btn sm" onclick="testConfig('{{ c.key }}')">Test</button>
-          {% if not c.active %}
-          <form method="post" action="{{ url_for('proxy_activate', key=c.key) }}" style="display:inline">
-            <input type="hidden" name="csrf" value="{{ csrf }}">
-            <button class="btn success sm">Activate</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5" class="empty">No configs.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Key</th><th>Name</th><th>URL</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead>
+    <tbody>
+    {% for c in configs %}
+    <tr>
+      <td><code>{{ c.key }}</code></td>
+      <td>{{ c.name }}</td>
+      <td class="mono muted" style="font-size:11.5px">{{ c.url_short }}</td>
+      <td>{% if c.active %}<span class="badge solid">active</span>{% else %}<span class="badge">idle</span>{% endif %}</td>
+      <td style="text-align:right">
+        <button class="btn btn-sm" onclick="testConfig('{{ c.key }}')">Test</button>
+        {% if not c.active %}
+        <form method="post" action="{{ url_for('proxy_activate', key=c.key) }}" style="display:inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn btn-sm btn-dark">Activate</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="empty">No configs.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </div>
 
-<div id="test-result" style="margin-bottom:20px"></div>
+<div id="test-result" style="margin-top:20px"></div>
 
-<div class="card">
-  <div class="card-head"><h2>Add config</h2></div>
+<div class="card" style="margin-top:20px">
+  <h2>Add config</h2>
   <form method="post" action="{{ url_for('proxy_add') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="field-row">
@@ -1263,8 +1273,8 @@ placeholder='{
   "settings": { "vnext": [ { "address": "...", "port": 443, "users": [ { "id": "...", "encryption": "none", "flow": "" } ] } ] },
   "streamSettings": { "network": "ws", "security": "tls", "tlsSettings": { "serverName": "...", "fingerprint": "chrome", "alpn": ["http/1.1"] }, "wsSettings": { "path": "/...", "headers": { "Host": "..." } } }
 }'></textarea>
-    <div style="margin-top:16px">
-      <button class="btn primary">Add config</button>
+    <div class="mt-3">
+      <button class="btn btn-dark">Add config</button>
     </div>
   </form>
 </div>
@@ -1280,8 +1290,8 @@ async function testConfig(key) {
       headers: {'X-CSRF-Token': csrf}
     });
     const data = await r.json();
-    el.innerHTML = '<div class="card"><div class="card-head"><h2>Result: ' + key + '</h2></div>' +
-      '<pre style="white-space:pre-wrap;color:#a5b4fc;font-size:12px;background:rgba(0,0,0,.35);padding:14px;border-radius:12px;font-family:JetBrains Mono,monospace">' +
+    el.innerHTML = '<div class="card"><h2>Result: ' + key + '</h2>' +
+      '<pre style="white-space:pre-wrap;color:#d4d4d4;font-size:12px;background:#0a0a0a;padding:14px;border-radius:10px;font-family:JetBrains Mono,monospace;line-height:1.6">' +
       JSON.stringify(data, null, 2) + '</pre></div>';
   } catch (e) {
     el.innerHTML = '<div class="flash err">Error: ' + e + '</div>';
@@ -1337,9 +1347,7 @@ def build_admin_app() -> Flask:
     def _attach_csrf():
         _csrf_token()
 
-    # ===================================================================
-    # Login
-    # ===================================================================
+    # ---------- Login ----------
     @app.route("/", methods=["GET"])
     def index():
         if session.get("admin"):
@@ -1382,9 +1390,7 @@ def build_admin_app() -> Flask:
         session.clear()
         return redirect(url_for("login"))
 
-    # ===================================================================
-    # Dashboard
-    # ===================================================================
+    # ---------- Dashboard ----------
     @app.route("/admin/dashboard")
     @_login_required
     def dashboard():
@@ -1405,9 +1411,7 @@ def build_admin_app() -> Flask:
         return render_template_string(BASE_TEMPLATE, title="Dashboard", body=body,
                                       page="dashboard")
 
-    # ===================================================================
-    # Users
-    # ===================================================================
+    # ---------- Users ----------
     @app.route("/admin/users")
     @_login_required
     def users_page():
@@ -1519,9 +1523,7 @@ def build_admin_app() -> Flask:
         flash(f"User {uid} deleted.")
         return redirect(url_for("users_page"))
 
-    # ===================================================================
-    # Requests
-    # ===================================================================
+    # ---------- Requests ----------
     @app.route("/admin/requests")
     @_login_required
     def requests_page():
@@ -1551,9 +1553,7 @@ def build_admin_app() -> Flask:
         flash(f"Request {rid} rejected.")
         return redirect(url_for("requests_page"))
 
-    # ===================================================================
-    # Transactions
-    # ===================================================================
+    # ---------- Transactions ----------
     @app.route("/admin/transactions")
     @_login_required
     def transactions_page():
@@ -1565,9 +1565,7 @@ def build_admin_app() -> Flask:
         return render_template_string(BASE_TEMPLATE, title="Transactions", body=body,
                                       page="tx")
 
-    # ===================================================================
-    # Shop
-    # ===================================================================
+    # ---------- Shop ----------
     @app.route("/admin/shop")
     @_login_required
     def shop_page():
@@ -1615,18 +1613,14 @@ def build_admin_app() -> Flask:
         flash(f"Item {item_id} deleted.")
         return redirect(url_for("shop_page"))
 
-    # ===================================================================
-    # Audit
-    # ===================================================================
+    # ---------- Audit ----------
     @app.route("/admin/audit")
     @_login_required
     def audit_page():
         body = render_template_string(AUDIT_TEMPLATE, entries=audit_all(500))
         return render_template_string(BASE_TEMPLATE, title="Audit", body=body, page="audit")
 
-    # ===================================================================
-    # Backups
-    # ===================================================================
+    # ---------- Backups ----------
     @app.route("/admin/backups")
     @_login_required
     def backups_page():
@@ -1688,9 +1682,7 @@ def build_admin_app() -> Flask:
             flash(f"Restore failed: {e}", "error")
         return redirect(url_for("backups_page"))
 
-    # ===================================================================
-    # Broadcast
-    # ===================================================================
+    # ---------- Broadcast ----------
     @app.route("/admin/broadcast")
     @_login_required
     def broadcast_page():
@@ -1744,9 +1736,7 @@ def build_admin_app() -> Flask:
             flash(f"Broadcast failed: {e}", "error")
         return redirect(url_for("broadcast_page"))
 
-    # ===================================================================
-    # Settings
-    # ===================================================================
+    # ---------- Settings ----------
     @app.route("/admin/settings")
     @_login_required
     def settings_page():
@@ -1781,9 +1771,7 @@ def build_admin_app() -> Flask:
         flash("Settings saved.")
         return redirect(url_for("settings_page"))
 
-    # ===================================================================
-    # TOTP
-    # ===================================================================
+    # ---------- TOTP ----------
     @app.route("/admin/settings/2fa", methods=["GET"])
     @_login_required
     def totp_page():
@@ -1835,9 +1823,7 @@ def build_admin_app() -> Flask:
         flash("2FA disabled.")
         return redirect(url_for("totp_page"))
 
-    # ===================================================================
-    # Proxy
-    # ===================================================================
+    # ---------- Proxy ----------
     @app.route("/admin/proxy")
     @_login_required
     def proxy_page():

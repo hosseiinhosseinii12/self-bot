@@ -2,7 +2,7 @@
 
 Two roles:
   * Owner (rt.owner_id) — full control panel
-  * Regular user         — user panel (no pairing prompt)
+  * Regular user         — user panel + web panel access
 
 Login flow uses state["step"] = "idle" | "phone" | "code" | "2fa".
 Phone step tries ResendCodeRequest ONCE per session (non-fatal).
@@ -11,6 +11,7 @@ Job creation is a graphical step-by-step flow.
 """
 import asyncio
 import io
+import os
 import random
 import re
 import string
@@ -141,13 +142,12 @@ def _owner_only(runtime: BotRuntime):
 
 
 def _guarded(runtime: BotRuntime):
-    """Only check ban + rate-limit. Do NOT block non-owner users."""
+    """Check ban + rate-limit. Do NOT block non-owner users."""
     def deco(fn):
         async def wrapper(event, *a, **kw):
             uid = event.sender_id or 0
             if uid and U.is_banned(uid):
                 return
-            # Owners bypass rate limit
             if uid and uid != runtime.owner_id:
                 if not user_limiter.allow(uid):
                     try:
@@ -178,6 +178,17 @@ async def _tidy(event) -> None:
         pass
 
 
+def _public_base_url() -> str:
+    """Return base URL for the web panel."""
+    base = os.environ.get("PUBLIC_URL") or ""
+    if base:
+        return base.rstrip("/")
+    dom = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    if dom:
+        return f"https://{dom}"
+    return "http://localhost:8080"
+
+
 # ===========================================================================
 # Runtime builder
 # ===========================================================================
@@ -203,15 +214,13 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- /start -----------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/start$", incoming=True))
+    @_guarded(rt)
     async def _start(event):
         uid = event.sender_id
-        if not uid:
-            return
         try:
             U.ensure_user(uid)
         except Exception:
             pass
-
         if uid == rt.owner_id:
             await event.respond(P.main_panel_text(), buttons=P.main_panel_buttons())
         else:
@@ -219,6 +228,7 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- /help ------------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/help$", incoming=True))
+    @_guarded(rt)
     async def _help(event):
         uid = event.sender_id
         if uid == rt.owner_id:
@@ -228,6 +238,7 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- pairing (only if owner is NOT set) -------------------------------
     @bot.on(events.NewMessage(pattern=r"^\d{6}$", incoming=True))
+    @_guarded(rt)
     async def _pairing(event):
         if rt.owner_id and rt.owner_id != 0:
             return
@@ -243,9 +254,8 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- /login -----------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/login$", incoming=True))
+    @_owner_only(rt)
     async def _login(event):
-        if event.sender_id != rt.owner_id:
-            return
         authorized = False
         try:
             authorized = bool(rt.user_client and await rt.user_client.is_user_authorized())
@@ -263,9 +273,8 @@ def _register_handlers(rt: BotRuntime) -> None:
 
     # --- /logout ----------------------------------------------------------
     @bot.on(events.NewMessage(pattern=r"^/logout$", incoming=True))
+    @_owner_only(rt)
     async def _logout(event):
-        if event.sender_id != rt.owner_id:
-            return
         try:
             if rt.user_client:
                 await rt.user_client.log_out()
@@ -499,7 +508,6 @@ def _register_handlers(rt: BotRuntime) -> None:
     # --- callbacks --------------------------------------------------------
     @bot.on(events.CallbackQuery())
     async def _cb(event):
-        # Rate-limit regular users
         uid = event.sender_id
         if uid and uid != rt.owner_id:
             if not user_limiter.allow(uid):
@@ -520,7 +528,6 @@ def _register_handlers(rt: BotRuntime) -> None:
         text = (event.raw_text or "").strip()
         if not text:
             return
-        # Skip commands (handled above)
         if text.startswith("/"):
             return
 
@@ -544,7 +551,7 @@ def _register_handlers(rt: BotRuntime) -> None:
 
         # === OWNER flow ===
         if text.startswith("."):
-            return  # handled by .rep / .stop
+            return
 
         step = state.get("step") or "idle"
         awaiting = state.get("awaiting") or {}
@@ -858,30 +865,56 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
 
     # ===== USER (non-owner) callbacks =====
     if data.startswith("user:") and uid != rt.owner_id:
+
         if data == "user:home":
             await edit(P.user_panel_text(uid), P.user_panel_buttons(uid))
             return
+
+        if data == "user:webpanel":
+            try:
+                from .user_panel import issue_web_token
+                tok = issue_web_token(uid)
+                url = f"{_public_base_url()}/user/?token={tok}"
+                await edit(
+                    "**🌐 Your Web Panel**\n\n"
+                    "Open the panel below to manage your account, "
+                    "request diamonds or subscription, and view your history.\n\n"
+                    "_Keep the link private — anyone with it can access your account._",
+                    [
+                        [Button.url("Open Web Panel", url)],
+                        [Button.inline("◀️ Back", b"user:home")],
+                    ],
+                )
+            except Exception as e:
+                log_bot.error(f"webpanel error: {type(e).__name__}: {e}")
+                await edit(f"❌ Could not generate link: {e}",
+                           [[Button.inline("◀️ Back", b"user:home")]])
+            return
+
         if data == "user:account":
             await edit(P.user_account_text(uid), P.user_account_buttons())
             return
+
         if data == "user:reqdiamonds":
             rt.awaiting[f"user_reqdiamonds:{uid}"] = True
             rt.save_state()
             await edit(
-                "💎 **Request diamonds**\n\n"
+                "**💎 Request diamonds**\n\n"
                 "Send the number of diamonds you want (1–10000):",
                 [[Button.inline("◀️ Back", b"user:account")]],
             )
             return
+
         if data == "user:reqsub":
             rows = [
-                [Button.inline("Basic — 30 days", b"user:reqsub:basic", style="primary")],
-                [Button.inline("Pro — 30 days", b"user:reqsub:pro", style="primary")],
-                [Button.inline("VIP — 30 days", b"user:reqsub:vip", style="primary")],
+                [Button.inline("Basic — 30 days", b"user:reqsub:basic")],
+                [Button.inline("Pro — 30 days", b"user:reqsub:pro")],
+                [Button.inline("VIP — 30 days", b"user:reqsub:vip")],
                 [Button.inline("◀️ Back", b"user:account")],
             ]
-            await edit("⭐ **Request subscription**\n\nPick a plan:", rows)
+            await edit("**⭐ Request subscription**\n\nPick a plan:", rows)
             return
+
         if data.startswith("user:reqsub:"):
             plan = data.split(":")[-1]
             R.create_subscription_request(uid, plan)
@@ -890,33 +923,37 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                 [[Button.inline("◀️ Back", b"user:account")]],
             )
             return
+
         if data == "user:myreq":
             items = R.for_user(uid)[:20]
             if not items:
                 await edit(
-                    "📜 **My requests**\n\n_You have no requests._",
+                    "**📜 My requests**\n\n_You have no requests._",
                     [[Button.inline("◀️ Back", b"user:home")]],
                 )
                 return
-            lines = ["📜 **My requests**\n"]
+            lines = ["**📜 My requests**\n"]
             for r in items:
                 lines.append(f"• `{r['id']}` — {r['type']} — {r['status']}")
             await edit("\n".join(lines),
                        [[Button.inline("◀️ Back", b"user:home")]])
             return
+
         if data == "user:referral":
             stats = REF.stats(uid)
             await edit(
-                f"🤝 **My referral code**\n\n"
+                f"**🤝 My referral code**\n\n"
                 f"`{stats['code']}`\n\n"
                 f"Share this code with friends. You both get diamonds when they join.\n\n"
                 f"**Total referrals:** {stats['count']}",
                 [[Button.inline("◀️ Back", b"user:home")]],
             )
             return
+
         if data == "user:help":
             await edit(P.user_help_text(), P.user_help_buttons())
             return
+
         return
 
     # ===== OWNER callbacks =====
@@ -1009,7 +1046,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline(P.t("btn_back"), b"nav:appearance")]])
         return
 
-    # Job creation
     if data == "job:new":
         rt._state["job_draft"] = {}
         rt._state["awaiting"] = {}
@@ -1126,7 +1162,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
                    [[Button.inline(P.t("btn_back"), b"nav:jobs")]])
         return
 
-    # Account
     if data == "acc:reqdiamonds":
         rt.awaiting["reqdiamonds"] = True
         rt.save_state()
@@ -1167,7 +1202,6 @@ async def _route_callback(rt: BotRuntime, event, data: str) -> None:
     if data == "acc:qrlogin":
         await _handle_qr_login(rt, event); return
 
-    # Memory
     if data == "mem:view":
         from .store import memory_store
         txt = "```\n" + (str(memory_store.all())[:3500]) + "\n```"
@@ -1243,7 +1277,7 @@ async def _handle_qr_login(rt: BotRuntime, event) -> None:
     try:
         remaining = max(0, int(expires_at - time.time()))
         caption = (
-            "🔐 **QR Code Login**\n\n"
+            "**🔐 QR Code Login**\n\n"
             "1. Open **Telegram** on your phone (official app).\n"
             "2. Go to **Settings → Devices → Link Desktop Device**.\n"
             "3. Scan this QR code.\n\n"

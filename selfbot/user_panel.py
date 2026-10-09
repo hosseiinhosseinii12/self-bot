@@ -1,6 +1,12 @@
-"""Light-themed user panel (Blueprint mounted at /user)."""
+"""User panel (Blueprint mounted at /user).
+
+Token-based access: /user/?token=<secret> — the token is issued
+by the bot via the 'My Web Panel' button.
+"""
+import secrets
 from datetime import datetime
-from flask import (Blueprint, flash, redirect, render_template_string,
+
+from flask import (Blueprint, abort, flash, redirect, render_template_string,
                    request, session, url_for)
 
 from .config import CONFIG, DB_PATH
@@ -8,6 +14,7 @@ from .economy import get_balance
 from .logging_setup import log_flask
 from .requests_mod import (create_diamond_request, create_subscription_request,
                            for_user)
+from .store import users_store
 from .subscriptions import PLANS, days_left, effective_plan, get_sub
 from .transactions import for_user as tx_for_user
 from .users import ensure_user, get_user
@@ -15,147 +22,199 @@ from .users import ensure_user, get_user
 bp = Blueprint("user", __name__, url_prefix="/user")
 
 
+# ===========================================================================
+# Token helpers
+# ===========================================================================
+def issue_web_token(user_id: int) -> str:
+    """Issue (or reuse) a web-panel token for a user."""
+    key = str(user_id)
+    u = users_store.get(key) or {"id": int(user_id)}
+    tok = u.get("web_token")
+    if not tok:
+        tok = secrets.token_urlsafe(32)
+        u["web_token"] = tok
+        users_store.set(key, u)
+    return tok
+
+
+def _resolve_from_token() -> int:
+    """Return user_id from ?token= or session."""
+    tok = request.args.get("token") or session.get("user_token")
+    if not tok:
+        abort(401)
+    for uid_str, u in (users_store.all() or {}).items():
+        if u.get("web_token") == tok:
+            session["user_token"] = tok
+            return int(uid_str)
+    abort(403)
+
+
+# ===========================================================================
+# HTML
+# ===========================================================================
 USER_BASE = """
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>SELF BOT · My account</title>
+<title>My Account · SELF BOT</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #f7f8fc;
-  --card: #ffffff;
-  --border: #e5e9f2;
-  --border-strong: #d1d8e6;
-  --text: #0f172a;
-  --text-dim: #64748b;
-  --text-mute: #94a3b8;
-  --indigo: #6366f1;
-  --violet: #a855f7;
-  --cyan: #06b6d4;
-  --emerald: #10b981;
-  --amber: #f59e0b;
-  --rose: #f43f5e;
-  --grad: linear-gradient(135deg, #6366f1, #a855f7);
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --text: #0a0a0a;
+  --text-2: #525252;
+  --text-3: #a3a3a3;
+  --border: #e5e5e5;
+  --border-2: #d4d4d4;
+  --hover: #f5f5f5;
+  --black: #0a0a0a;
+  --white: #ffffff;
+  --green: #16a34a;
+  --red: #dc2626;
+  --amber: #d97706;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: 'Inter', -apple-system, sans-serif;
   background: var(--bg);
   color: var(--text);
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  min-height: 100vh;
-  background-image:
-    radial-gradient(800px 500px at 0% 0%, rgba(99,102,241,.08), transparent 60%),
-    radial-gradient(700px 500px at 100% 0%, rgba(168,85,247,.06), transparent 55%);
-  background-attachment: fixed;
 }
-a { color: var(--indigo); text-decoration: none; }
-a:hover { text-decoration: underline; }
-.wrap { max-width: 900px; margin: 0 auto; padding: 40px 20px 60px; }
+.wrap { max-width: 1000px; margin: 0 auto; padding: 40px 20px 60px; }
 
-.head { margin-bottom: 32px; }
-.head .title {
-  font-size: 30px; font-weight: 800; letter-spacing: -.03em;
-  background: var(--grad);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
+.page-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 20px; margin-bottom: 32px; flex-wrap: wrap;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
 }
-.head .sub { color: var(--text-dim); font-size: 14px; margin-top: 4px; }
+.page-title {
+  font-size: 28px; font-weight: 800;
+  letter-spacing: -.035em;
+  color: var(--text);
+}
+.page-sub { color: var(--text-2); font-size: 13.5px; margin-top: 4px; }
 
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 16px; margin-bottom: 24px; }
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px; margin-bottom: 24px;
+}
 .stat {
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 18px;
-  padding: 22px;
-  box-shadow: 0 1px 3px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.04);
-  transition: transform .2s, box-shadow .2s;
+  border-radius: 12px;
+  padding: 20px;
 }
-.stat:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(15,23,42,.08); }
-.stat .k { color: var(--text-dim); font-size: 11.5px; font-weight: 600;
-  letter-spacing: .08em; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
-.stat .v { font-size: 30px; font-weight: 800; margin-top: 12px;
-  letter-spacing: -.03em; }
-.stat.indigo .v { background: var(--grad); -webkit-background-clip: text;
-  background-clip: text; -webkit-text-fill-color: transparent; }
-.stat.emerald .v { color: var(--emerald); }
-.stat.violet .v { color: var(--violet); }
-.stat.amber .v { color: var(--amber); }
-
-.progress { height: 8px; background: #eef2f7; border-radius: 999px;
-  overflow: hidden; margin-top: 14px; }
-.progress > div { height: 100%; background: var(--grad); border-radius: 999px;
-  transition: width .6s ease; }
+.stat .k {
+  font-size: 11px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-3);
+}
+.stat .v {
+  font-size: 28px; font-weight: 800;
+  letter-spacing: -.03em;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.progress { height: 6px; background: #f0f0f0; border-radius: 999px;
+  overflow: hidden; margin-top: 12px; }
+.progress > div { height: 100%; background: var(--black); border-radius: 999px; }
 
 .card {
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 12px;
   padding: 24px;
   margin-bottom: 20px;
-  box-shadow: 0 1px 3px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.04);
 }
-.card h2 { font-size: 15px; font-weight: 700; letter-spacing: -.01em; margin-bottom: 16px; }
-.card h2 .sub { color: var(--text-mute); font-weight: 500; font-size: 12.5px; margin-left: 8px; }
+.card h2 {
+  font-size: 15px; font-weight: 700;
+  letter-spacing: -.01em;
+  margin-bottom: 16px;
+}
 
-.form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
-.form-row > * { flex: 1; min-width: 150px; }
-label { display: block; font-size: 12px; color: var(--text-dim);
-  margin-bottom: 6px; font-weight: 600; letter-spacing: .02em; }
+.field-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.field-row > * { flex: 1; min-width: 140px; }
+label { display: block; font-size: 12px; font-weight: 600;
+  color: var(--text-2); margin-bottom: 6px; }
 input, select {
-  width: 100%; padding: 11px 14px;
-  border: 1px solid var(--border-strong); border-radius: 10px;
+  width: 100%; padding: 10px 12px;
+  border: 1px solid var(--border-2); border-radius: 8px;
   background: #fff; color: var(--text); font-size: 13.5px; font-family: inherit;
   transition: border-color .15s, box-shadow .15s;
 }
 input:focus, select:focus {
-  outline: none; border-color: var(--indigo);
-  box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+  outline: none; border-color: var(--text);
+  box-shadow: 0 0 0 3px rgba(10,10,10,.06);
 }
 
-button, .btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 11px 20px;
-  border: none; border-radius: 10px;
-  background: var(--grad); color: #fff;
-  font-size: 13.5px; font-weight: 600; cursor: pointer;
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--black);
+  background: var(--black); color: var(--white);
+  font-size: 13.5px; font-weight: 500;
+  cursor: pointer;
+  transition: opacity .15s;
   font-family: inherit;
-  transition: transform .15s, box-shadow .15s;
-  box-shadow: 0 6px 18px rgba(99,102,241,.3);
+  text-decoration: none;
 }
-button:hover, .btn:hover { transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(99,102,241,.4); text-decoration: none; }
-
-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-th { color: var(--text-mute); text-align: left; padding: 10px 12px;
-  font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
-  font-weight: 700; border-bottom: 1px solid var(--border); }
-td { padding: 12px; border-bottom: 1px solid var(--border); }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: #fafbff; }
-.mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
-.muted { color: var(--text-dim); font-size: 13px; }
-
-.pill {
-  display: inline-block; padding: 3px 10px; border-radius: 999px;
-  font-size: 11px; font-weight: 700; letter-spacing: .03em;
+.btn:hover { opacity: .88; text-decoration: none; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-ghost {
+  background: var(--white); color: var(--text); border-color: var(--border-2);
 }
-.pill.pending  { background: #fef3c7; color: #92400e; }
-.pill.approved { background: #d1fae5; color: #065f46; }
-.pill.rejected { background: #fee2e2; color: #991b1b; }
+.btn-ghost:hover { background: var(--hover); opacity: 1; }
+
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  background: #fafafa; color: var(--text-2);
+  font-size: 11px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+  text-align: left; padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+tbody td { padding: 12px 16px; border-bottom: 1px solid var(--border);
+  font-size: 13.5px; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--hover); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--text-2); }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border-2);
+  background: var(--white);
+}
+.badge.solid { background: var(--black); color: var(--white); border-color: var(--black); }
+.badge.green { background: #f0fdf4; color: var(--green); border-color: #bbf7d0; }
+.badge.amber { background: #fffbeb; color: var(--amber); border-color: #fde68a; }
+.badge.red { background: #fef2f2; color: var(--red); border-color: #fecaca; }
 
 .flash {
-  padding: 12px 18px; border-radius: 12px; margin-bottom: 18px;
-  background: #d1fae5; color: #065f46;
-  border: 1px solid #a7f3d0; font-size: 13.5px; font-weight: 500;
+  padding: 12px 16px; border-radius: 10px; margin-bottom: 20px;
+  background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0;
+  font-size: 13.5px;
 }
-.flash.err { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+.flash.err { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+
+.empty { padding: 40px; text-align: center; color: var(--text-3); font-size: 13.5px; }
+code {
+  font-family: var(--mono); font-size: 12.5px;
+  background: #f5f5f5; padding: 2px 6px; border-radius: 5px;
+}
 </style>
 </head>
 <body>
@@ -166,9 +225,11 @@ tr:hover td { background: #fafbff; }
 
 
 PANEL = """
-<div class="head">
-  <div class="title">My Account</div>
-  <div class="sub">Welcome back, {{ first_name }} 👋</div>
+<div class="page-head">
+  <div>
+    <div class="page-title">My Account</div>
+    <div class="page-sub">Welcome, {{ first_name }} · ID <code>{{ user_id }}</code></div>
+  </div>
 </div>
 
 {% with msgs = get_flashed_messages(with_categories=true) %}
@@ -178,45 +239,45 @@ PANEL = """
 {% endwith %}
 
 <div class="stats">
-  <div class="stat indigo">
-    <div class="k">◆ Diamonds balance</div>
+  <div class="stat">
+    <div class="k">Diamond balance</div>
     <div class="v">{{ diamonds }}</div>
   </div>
-  <div class="stat violet">
-    <div class="k">◆ Current plan</div>
-    <div class="v" style="font-size:24px">{{ plan }}</div>
+  <div class="stat">
+    <div class="k">Current plan</div>
+    <div class="v" style="font-size:22px">{{ plan }}</div>
   </div>
-  <div class="stat emerald">
-    <div class="k">◷ Days remaining</div>
+  <div class="stat">
+    <div class="k">Days remaining</div>
     <div class="v">{{ days }}</div>
     <div class="progress"><div style="width: {{ pct }}%"></div></div>
   </div>
-  <div class="stat amber">
-    <div class="k">◆ Referral code</div>
+  <div class="stat">
+    <div class="k">Referral code</div>
     <div class="v mono" style="font-size:16px">{{ referral_code }}</div>
   </div>
 </div>
 
 <div class="card">
-  <h2>💎 Request diamonds</h2>
+  <h2>Request diamonds</h2>
   <form method="post" action="{{ url_for('user.request_diamonds') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="form-row">
-      <div style="max-width:200px">
+    <div class="field-row">
+      <div style="flex:0 0 200px">
         <label>Amount (1–10000)</label>
         <input type="number" name="amount" value="50" min="1" max="10000">
       </div>
-      <button>Send request →</button>
+      <button class="btn">Send request</button>
     </div>
   </form>
 </div>
 
 <div class="card">
-  <h2>⭐ Request subscription</h2>
+  <h2>Request subscription</h2>
   <form method="post" action="{{ url_for('user.request_subscription') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="form-row">
-      <div style="max-width:280px">
+    <div class="field-row">
+      <div style="flex:0 0 260px">
         <label>Plan</label>
         <select name="plan">
           <option value="basic">Basic — 30 days</option>
@@ -224,59 +285,64 @@ PANEL = """
           <option value="vip">VIP — 30 days</option>
         </select>
       </div>
-      <button>Send request →</button>
+      <button class="btn">Send request</button>
     </div>
   </form>
 </div>
 
 <div class="card">
-  <h2>📜 My requests <span class="sub">{{ requests|length }}</span></h2>
+  <h2>My requests <span class="muted" style="font-weight:400">({{ requests|length }})</span></h2>
   <table>
-    <thead>
-      <tr><th>ID</th><th>Type</th><th>Value</th><th>Status</th><th>Created</th></tr>
-    </thead>
+    <thead><tr><th>ID</th><th>Type</th><th>Value</th><th>Status</th><th>Created</th></tr></thead>
     <tbody>
     {% for r in requests %}
     <tr>
       <td class="mono muted">{{ r.id }}</td>
       <td>{{ r.type }}</td>
       <td><strong>{{ r.amount or r.plan or '—' }}</strong></td>
-      <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+      <td>
+        {% if r.status == 'pending' %}<span class="badge amber">pending</span>
+        {% elif r.status == 'approved' %}<span class="badge green">approved</span>
+        {% else %}<span class="badge red">rejected</span>{% endif %}
+      </td>
       <td class="mono muted">{{ r.created_at[:19] }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="5" style="text-align:center;color:var(--text-mute);padding:30px">No requests yet.</td></tr>
+    <tr><td colspan="5" class="empty">No requests yet.</td></tr>
     {% endfor %}
     </tbody>
   </table>
 </div>
 
 <div class="card">
-  <h2>⇄ Transaction history <span class="sub">{{ txs|length }}</span></h2>
+  <h2>Transaction history <span class="muted" style="font-weight:400">({{ txs|length }})</span></h2>
   <table>
-    <thead>
-      <tr><th>When</th><th>Kind</th><th>Amount</th><th>Reason</th><th>Balance</th></tr>
-    </thead>
+    <thead><tr><th>When</th><th>Kind</th><th>Amount</th><th>Reason</th><th>Balance</th></tr></thead>
     <tbody>
     {% for tx in txs %}
     <tr>
       <td class="mono muted">{{ tx.created_at[:19] }}</td>
       <td>{{ tx.kind }}</td>
-      <td><strong>{{ tx.amount }}</strong></td>
+      <td class="mono">{{ tx.amount }}</td>
       <td class="muted">{{ tx.reason }}</td>
       <td class="mono">{{ tx.balance_after }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="5" style="text-align:center;color:var(--text-mute);padding:30px">No transactions yet.</td></tr>
+    <tr><td colspan="5" class="empty">No transactions yet.</td></tr>
     {% endfor %}
     </tbody>
   </table>
+</div>
+
+<div class="card">
+  <h2>Share your referral</h2>
+  <p class="muted">Give this code to friends. When they join, both of you receive bonus diamonds.</p>
+  <p style="margin-top:12px"><code style="font-size:16px">{{ referral_code }}</code></p>
 </div>
 """
 
 
 def _csrf_token() -> str:
-    import secrets
     tok = session.get("csrf_user")
     if not tok:
         tok = secrets.token_urlsafe(24)
@@ -285,19 +351,17 @@ def _csrf_token() -> str:
 
 
 def _csrf_check() -> None:
-    from flask import abort
     tok = request.form.get("csrf")
     if not tok or tok != session.get("csrf_user"):
         abort(400, "CSRF check failed")
 
 
-def _resolve_uid() -> int:
-    return int(CONFIG.get("owner_id", 338266658))
-
-
+# ===========================================================================
+# Routes
+# ===========================================================================
 @bp.route("/", methods=["GET"])
 def index():
-    uid = _resolve_uid()
+    uid = _resolve_from_token()
     ensure_user(uid)
     u = get_user(uid) or {}
     plan = effective_plan(uid)
@@ -316,6 +380,7 @@ def index():
 
     body = render_template_string(
         PANEL,
+        user_id=uid,
         diamonds=get_balance(uid),
         plan=plan,
         days=days,
@@ -332,25 +397,25 @@ def index():
 @bp.route("/request/diamonds", methods=["POST"])
 def request_diamonds():
     _csrf_check()
-    uid = _resolve_uid()
+    uid = _resolve_from_token()
     try:
         amount = int(request.form.get("amount", "0"))
     except ValueError:
         flash("Invalid amount.", "error")
-        return redirect(url_for("user.index"))
+        return redirect(url_for("user.index") + f"?token={session.get('user_token','')}")
     create_diamond_request(uid, amount)
-    flash("💎 Diamond request sent to admin.")
-    return redirect(url_for("user.index"))
+    flash("Diamond request sent to admin.")
+    return redirect(url_for("user.index") + f"?token={session.get('user_token','')}")
 
 
 @bp.route("/request/subscription", methods=["POST"])
 def request_subscription():
     _csrf_check()
-    uid = _resolve_uid()
+    uid = _resolve_from_token()
     plan = request.form.get("plan", "basic")
     create_subscription_request(uid, plan)
-    flash(f"⭐ Subscription request ({plan}) sent to admin.")
-    return redirect(url_for("user.index"))
+    flash(f"Subscription request ({plan}) sent to admin.")
+    return redirect(url_for("user.index") + f"?token={session.get('user_token','')}")
 
 
 def build_user_app():
