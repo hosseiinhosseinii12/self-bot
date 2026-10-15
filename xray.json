@@ -24,11 +24,11 @@
       "settings": {
         "vnext": [
           {
-            "address": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev",
-            "port": 443,
+            "address": "104.17.23.108",
+            "port": 8443,
             "users": [
               {
-                "id": "acb8ddca-b6b2-4821-8db1-34b18bb31d63",
+                "id": "cf8a6224-1855-45a0-be64-76289bac5b54",
                 "encryption": "none",
                 "flow": ""
               }
@@ -40,15 +40,16 @@
         "network": "ws",
         "security": "tls",
         "tlsSettings": {
-          "serverName": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev",
+          "serverName": "misty-garden-fa6c-03a4df3e.pages.dev",
           "fingerprint": "chrome",
           "allowInsecure": false,
-          "alpn": ["http/1.1"]
+          "alpn": ["http/1.1"],
+          "echConfigList": "cloudflare-ech.com+udp://1.1.1.1"
         },
         "wsSettings": {
-          "path": "/vl/nTTZbCCwhkKVQ75evMl3biwR1h4lbdoF?ed=2560",
+          "path": "/98643feed4c6",
           "headers": {
-            "Host": "3ybdmvfe58jwrqbia1z9.v2config.workers.dev"
+            "Host": "misty-garden-fa6c-03a4df3e.pages.dev"
           }
         }
       }
